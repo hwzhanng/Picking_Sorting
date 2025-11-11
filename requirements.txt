@@ -1,0 +1,16 @@
+numpy==1.23
+imageio
+termcolor
+decorators
+opencv-python
+spatialmath-python
+scipy
+qpsolvers
+quadprog
+numpy-quaternion
+seaborn
+PyYAML==6.0
+omegaconf
+hydra-core
+wandb
+tensorboardX
