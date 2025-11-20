@@ -17,7 +17,7 @@ task: Tracking # Catching_TwoStage, Catching_OneStage, Tracking
 num_envs: 32 # This should be no more than 2x your CPUs (1x is recommended)
 object_eval: False
 # used to set checkpoint path
-checkpoint_tracking: ''
+checkpoint_tracking: 'assets/models/track.pth'
 checkpoint_catching: ''
 # checkpoint_tracking: 'assets/models/track.pth'
 # checkpoint_catching: 'assets/models/catch_two_stage.pth'
@@ -25,9 +25,9 @@ checkpoint_catching: ''
 # wandb config
 output_name: Dcmm
 wandb_mode: "disabled"  # "online" | "offline" | "disabled"
-wandb_entity: 'Your_username'
-# wandb_project: 'RL_Dcmm_Track_Random'
-wandb_project: 'RL_Dcmm_Catch_Random'
+wandb_entity: null
+wandb_project: 'RL_Dcmm_Track_Random'
+# wandb_project: 'RL_Dcmm_Catch_Random'
 
 # set default task and default training config based on task
 defaults:

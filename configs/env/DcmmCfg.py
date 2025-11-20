@@ -32,11 +32,11 @@ hand_joints = np.array([
 ## Define the reward weights
 reward_weights = {
     "r_base_pos": 0.0,
-    "r_ee_pos": 10.0,
+    "r_ee_pos": 1.0,
     "r_precision": 10.0,
     "r_orient": 1.0,
     "r_touch": {
-        'Tracking': 5,
+        'Tracking': 10,
         'Catching': 0.1
     },
     "r_constraint": 1.0,
@@ -47,6 +47,9 @@ reward_weights = {
         'hand': 0.2,
     },
     "r_collision": -10.0,
+    "r_finger_approach": 1.0,
+    "r_force_closure": 5.0,
+    "r_regularization": 0.05,
 }
 
 ## Define the camera params for the MujocoRenderer.
@@ -104,15 +107,15 @@ object_static = np.array([0.5, 0.75])
 ## Observation Noise
 k_obs_base = 0.01
 k_obs_arm = 0.001
-k_obs_object = 0.01
+k_obs_object = 0.025
 k_obs_hand = 0.01
 ## Actions Noise
 k_act = 0.025
 ## Action Delay
 act_delay = {
-    'base': [1,],
-    'arm': [1,],
-    'hand': [1,],
+    'base': [1, 2, 3],
+    'arm': [1, 2, 3],
+    'hand': [1, 2, 3],
 }
 
 ## Define PID params for wheel drive and steering. 

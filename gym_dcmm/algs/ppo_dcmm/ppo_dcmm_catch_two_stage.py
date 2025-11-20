@@ -25,13 +25,14 @@ class PPO_Catch_TwoStage(object):
         self.env = env
         self.num_actors = int(self.ppo_config['num_actors'])
         print("num_actors: ", self.num_actors)
-        self.actions_num = self.env.call("act_c_dim")[0]
+        self.actions_num = self.env.get_attr("act_c_dim")[0]
         print("actions_num: ", self.actions_num)
-        self.actions_low = self.env.call("actions_low")[0]
-        self.actions_high = self.env.call("actions_high")[0]
-        self.obs_shape = (self.env.call("obs_c_dim")[0],)
-        self.obs_t_shape = (self.env.call("obs_t_dim")[0],) # remove the hand part
-        self.full_action_dim = self.env.call("act_c_dim")[0]
+        self.actions_low = self.env.get_attr("actions_low")[0]
+        self.actions_high = self.env.get_attr("actions_high")[0]
+        self.obs_shape = (self.env.get_attr("obs_c_dim")[0],)
+        self.obs_t_shape = (self.env.get_attr("obs_t_dim")[0],) # remove the hand part
+        self.full_action_dim = self.env.get_attr("act_c_dim")[0]
+        self.task = self.env.get_attr("task")[0]
         # ---- Model ----
         net_config = {
             'actor_units': self.network_config.mlp.units,
@@ -137,13 +138,20 @@ class PPO_Catch_TwoStage(object):
         actor_path: Path to save actor model parameters.
         """
         print("### Start loading tracking model")
-        if checkpoint_catching or not checkpoint_tracking:
-            return
-        self.model.actor_mlp_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mlp'])
-        self.model.mu_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mu'])
-        self.model.sigma_t.data.copy_(torch.load(checkpoint_tracking, map_location=self.device)['tracking_sigma'])
-        print("self.model.sigma_t.data: ", self.model.sigma_t.data)
-        self.running_mean_std_track.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['running_mean_std'])
+        if checkpoint_tracking and not checkpoint_catching:
+            self.model.actor_mlp_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mlp'])
+            self.model.mu_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mu'])
+            self.model.sigma_t.data.copy_(torch.load(checkpoint_tracking, map_location=self.device)['tracking_sigma'])
+            print("self.model.sigma_t.data: ", self.model.sigma_t.data)
+            self.running_mean_std_track.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['running_mean_std'])
+        
+        # Freeze the tracking model
+        for param in self.model.actor_mlp_t.parameters():
+            param.requires_grad = False
+        for param in self.model.mu_t.parameters():
+            param.requires_grad = False
+        self.model.sigma_t.requires_grad = False
+        
         print("### Done loading tracking model")
 
     def write_stats(self, a_losses, c_losses, b_losses, entropies, kls):
@@ -377,7 +385,7 @@ class PPO_Catch_TwoStage(object):
     
     def obs2tensor(self, obs, task=''):
         if task == '':
-            task = self.env.call('task')[0]
+            task = self.task
         # Map the step result to tensor
         if task == 'Catching':
             obs_array = np.concatenate((
@@ -400,7 +408,7 @@ class PPO_Catch_TwoStage(object):
     def action2dict(self, actions):
         actions = actions.cpu().numpy()
         # De-normalize the actions
-        if self.env.call('task')[0] == 'Tracking':
+        if self.task == 'Tracking':
             base_tensor = actions[:, :2] * self.action_track_denorm[0]
             arm_tensor = actions[:, 2:6] * self.action_track_denorm[1]
             hand_tensor = actions[:, 6:] * self.action_track_denorm[2]

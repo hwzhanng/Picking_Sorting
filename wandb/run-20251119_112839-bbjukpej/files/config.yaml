@@ -1,0 +1,143 @@
+_wandb:
+    value:
+        cli_version: 0.22.3
+        e:
+            130rs38qe3854epqa7syvr50ra8uttie:
+                args:
+                    - task=Tracking
+                    - wandb_mode=online
+                codePath: train_DCMM.py
+                codePathLocal: train_DCMM.py
+                cpu_count: 16
+                cpu_count_logical: 24
+                cudaVersion: "12.2"
+                disk:
+                    /:
+                        total: "157392060416"
+                        used: "73109024768"
+                email: hwzclementine@gmail.com
+                executable: /home/cle/anaconda3/envs/dcmm/bin/python
+                git:
+                    commit: 63837892faa198c2ddf4d16544be5e791d73279c
+                    remote: https://github.com/hwzhanng/Picking_Sorting.git
+                gpu: NVIDIA GeForce RTX 4060 Laptop GPU
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 3072
+                      memoryTotal: "8585740288"
+                      name: NVIDIA GeForce RTX 4060 Laptop GPU
+                      uuid: GPU-1adc7f41-0ff5-0707-fe0b-4ec88b2145f3
+                host: Legion-Y7000P-Ubuntu20
+                memory:
+                    total: "33409802240"
+                os: Linux-6.8.0-87-generic-x86_64-with-glibc2.17
+                program: train_DCMM.py
+                python: CPython 3.8.20
+                root: /home/cle/catch_it
+                startedAt: "2025-11-19T03:28:39.152474Z"
+                writerId: 130rs38qe3854epqa7syvr50ra8uttie
+        m: []
+        python_version: 3.8.20
+        t:
+            "1":
+                - 1
+                - 50
+            "2":
+                - 1
+                - 50
+            "3":
+                - 13
+                - 16
+                - 61
+            "4": 3.8.20
+            "5": 0.22.3
+            "12": 0.22.3
+            "13": linux-x86_64
+checkpoint_catching:
+    value: ""
+checkpoint_tracking:
+    value: ""
+device_id:
+    value: 0
+experiment:
+    value: ""
+imshow_cam:
+    value: false
+num_envs:
+    value: 16
+object_eval:
+    value: false
+output_name:
+    value: Dcmm
+rl_device:
+    value: cuda:0
+seed:
+    value: null
+task:
+    value: Tracking
+test:
+    value: false
+torch_deterministic:
+    value: false
+train:
+    value:
+        algo: PPO
+        network:
+            mlp:
+                units:
+                    - 256
+                    - 128
+            separate_value_mlp: true
+        ppo:
+            action_catch_denorm:
+                - 1.5
+                - 0.025
+                - 0.15
+            action_track_denorm:
+                - 1.5
+                - 0.025
+                - 0.01
+            bounds_loss_coef: 0.0001
+            clip_value: true
+            clip_value_loss: false
+            critic_coef: 4
+            e_clip: 0.2
+            entropy_coef: 0
+            freeze_arm: false
+            freeze_base: false
+            gamma: 0.99
+            grad_norm: 1
+            horizon_length: 64
+            img_dim:
+                - 112
+                - 112
+            kl_threshold: 0.016
+            learning_rate: 0.0005
+            lr_schedule: kl
+            max_agent_steps: 25000000
+            max_test_steps: 10000
+            mini_epochs: 6
+            minibatch_size: 512
+            name: Dcmm
+            normalize_advantage: true
+            normalize_input: true
+            normalize_value: true
+            num_actors: 16
+            num_frames: 2
+            reward_scale_value: 0.1
+            save_best_after: 500
+            save_frequency: 2000
+            tau: 0.95
+            test_num_episodes: 100
+            truncate_grads: true
+            value_bootstrap: true
+        seed: null
+viewer:
+    value: false
+wandb_entity:
+    value: null
+wandb_mode:
+    value: online
+wandb_project:
+    value: RL_Dcmm_Track_Random

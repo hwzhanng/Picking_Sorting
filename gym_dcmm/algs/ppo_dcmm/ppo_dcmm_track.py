@@ -25,13 +25,14 @@ class PPO_Track(object):
         self.env = env
         self.num_actors = int(self.ppo_config['num_actors'])
         print("num_actors: ", self.num_actors)
-        self.actions_num = self.env.call("act_t_dim")[0]
+        self.actions_num = self.env.get_attr("act_t_dim")[0]
         print("actions_num: ", self.actions_num)
-        self.actions_low = self.env.call("actions_low")[0]
-        self.actions_high = self.env.call("actions_high")[0]
+        self.actions_low = self.env.get_attr("actions_low")[0]
+        self.actions_high = self.env.get_attr("actions_high")[0]
         # self.obs_shape = self.env.observation_space.shape
-        self.obs_shape = (self.env.call("obs_t_dim")[0],)
-        self.full_action_dim = self.env.call("act_c_dim")[0]
+        self.obs_shape = (self.env.get_attr("obs_t_dim")[0],)
+        self.full_action_dim = self.env.get_attr("act_c_dim")[0]
+        self.task = self.env.get_attr("task")[0]
         # ---- Model ----
         net_config = {
             'actor_units': self.network_config.mlp.units,
@@ -347,7 +348,7 @@ class PPO_Track(object):
     
     def obs2tensor(self, obs):
         # Map the step result to tensor
-        if self.env.call('task')[0] == 'Catching':
+        if self.task == 'Catching':
             obs_array = np.concatenate((
                         obs["base"]["v_lin_2d"], 
                         obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], obs["arm"]["ee_v_lin_3d"],
@@ -367,7 +368,7 @@ class PPO_Track(object):
     def action2dict(self, actions):
         actions = actions.cpu().numpy()
         # De-normalize the actions
-        if self.env.call('task')[0] == 'Tracking':
+        if self.task == 'Tracking':
             base_tensor = actions[:, :2] * self.action_track_denorm[0]
             arm_tensor = actions[:, 2:5] * self.action_track_denorm[1]
             hand_tensor = actions[:, 5:] * self.action_track_denorm[2]

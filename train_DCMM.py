@@ -41,6 +41,11 @@ def main(config: DictConfig):
     # Create and wrap the environment
     env_name = 'gym_dcmm/DcmmVecWorld-v0'
     task = 'Tracking' if config.task == 'Tracking' else 'Catching'
+    
+    if config.num_envs > 16:
+        cprint(f"Warning: config.num_envs {config.num_envs} is too large for the available CPU cores. Capping at 16.", 'yellow')
+        config.num_envs = 16
+        
     print("config.num_envs: ", config.num_envs)
     env = gym.make_vec(env_name, num_envs=int(config.num_envs), 
                     task=task, camera_name=["top"],
@@ -52,7 +57,7 @@ def main(config: DictConfig):
                     print_obs = False, print_info = False,
                     print_reward = False, print_ctrl = False,
                     print_contacts = False, object_eval = config.object_eval,
-                    env_time = 2.5, steps_per_policy = 20)
+                    env_time = 4.0, steps_per_policy = 20)
 
     output_dif = os.path.join('outputs', config.output_name)
     # Get the local date and time
