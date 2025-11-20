@@ -31,7 +31,7 @@
 
 1.  **克隆仓库**:
     ```bash
-    git clone <repository_url>
+    git clone https://github.com/hwzhanng/Picking_Sorting.git
     cd catch_it
     ```
 
