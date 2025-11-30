@@ -19,8 +19,7 @@ INSTALL_REQUIRES = [
 # Installation operation
 setup(
     name="gym_dcmm",
-    author="Yuanhang Zhang",
-    version="0.0.1",
+      version="0.0.1",
     description="Mujoco Environment for Dexterous Catch with Mobile Manipulation (DCMM).",
     keywords=["robotics", "rl"],
     include_package_data=True,

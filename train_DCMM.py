@@ -42,14 +42,14 @@ def main(config: DictConfig):
     env_name = 'gym_dcmm/DcmmVecWorld-v0'
     task = 'Tracking' if config.task == 'Tracking' else 'Catching'
     
-    if config.num_envs > 16:
-        cprint(f"Warning: config.num_envs {config.num_envs} is too large for the available CPU cores. Capping at 16.", 'yellow')
-        config.num_envs = 16
+    if config.num_envs > 18:
+        cprint(f"Warning: config.num_envs {config.num_envs} is too large for the available CPU cores. Capping at 18.", 'yellow')
+        config.num_envs = 18
         
     print("config.num_envs: ", config.num_envs)
     env = gym.make_vec(env_name, num_envs=int(config.num_envs), 
-                    task=task, camera_name=["top"],
-                    render_per_step=False, render_mode = "rgb_array",
+                    task=task, camera_name=["top"],  # Use vehicle top camera
+                    render_per_step=False, render_mode = "depth_array", # Use depth mode
                     object_name = "object",
                     img_size = config.train.ppo.img_dim,
                     imshow_cam = config.imshow_cam, 

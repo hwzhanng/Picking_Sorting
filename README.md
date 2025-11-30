@@ -98,3 +98,4 @@ catch_it/
 - **观测噪声**: 设置 `k_obs_object = 0.025` 以模拟感知噪声。
 - **动作延迟**: 启用随机延迟 `[1, 2, 3]` 步 (约 40-120ms)。
 - **静态速度**: 如果使用视觉追踪静态物体，建议强制将物体速度观测置零。
+python train_DCMM.py task=Tracking test=True checkpoint_tracking="outputs/Dcmm/2025-11-27/16:33:47/nn/best_reward_2227.66.pth" num_envs=1 viewer=True

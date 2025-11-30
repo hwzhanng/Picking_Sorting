@@ -307,7 +307,7 @@ class PPO_Catch_OneStage(object):
                     + b_loss * self.bounds_loss_coef
 
                 self.optimizer.zero_grad()
-                loss.backward(retain_graph=True)
+                loss.backward()
 
                 if self.truncate_grads:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_norm)

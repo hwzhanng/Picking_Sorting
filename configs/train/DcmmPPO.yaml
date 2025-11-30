@@ -42,5 +42,5 @@ ppo:
   max_agent_steps: 25000000
   test_num_episodes: 100
   max_test_steps: 10000
-  img_dim: [112, 112]
+  img_dim: [224, 224]
   num_frames: 2

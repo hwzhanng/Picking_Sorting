@@ -11,13 +11,14 @@ device_id: 0  # 'cuda:?', -1 for 'cpu'
 # Disables viewer or camera visualization
 viewer: False
 imshow_cam: False
+use_vision: True
 # RL Arguments
 test: False # False, True
 task: Tracking # Catching_TwoStage, Catching_OneStage, Tracking
 num_envs: 32 # This should be no more than 2x your CPUs (1x is recommended)
 object_eval: False
 # used to set checkpoint path
-checkpoint_tracking: 'assets/models/track.pth'
+checkpoint_tracking: ''  # Empty for fresh training (15-dim obs space)
 checkpoint_catching: ''
 # checkpoint_tracking: 'assets/models/track.pth'
 # checkpoint_catching: 'assets/models/catch_two_stage.pth'

@@ -1,9 +1,3 @@
-"""
-Author: Yuanhang Zhang
-Version@2024-10-17
-All Rights Reserved
-ABOUT: this file constains the basic class of the DexCatch with Mobile Manipulation (DCMM) in the MuJoCo simulation environment.
-"""
 import os, sys
 sys.path.append(os.path.abspath('../'))
 import copy
@@ -131,6 +125,7 @@ class MJ_DCMM(object):
         self.target_arm_qpos[:] = DcmmCfg.arm_joints[:]
         ## Initialize the target joint positions of the hand
         self.target_hand_qpos[:] = DcmmCfg.hand_joints[:]
+        self.open_hand_qpos = np.copy(DcmmCfg.hand_joints[:]) # Define open hand pose (zeros)
 
         self.ik_solution = np.zeros(6)
 

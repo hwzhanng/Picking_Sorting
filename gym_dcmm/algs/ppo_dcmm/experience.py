@@ -8,6 +8,8 @@ def transform_op(arr):
     """
     if arr is None:
         return arr
+    if isinstance(arr, dict):
+        return {k: transform_op(v) for k, v in arr.items()}
     s = arr.size()
     return arr.transpose(0, 1).reshape(s[0] * s[1], *s[2:])
 
@@ -23,9 +25,6 @@ class ExperienceBuffer(Dataset):
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.storage_dict = {
-            'obses': torch.zeros(
-                (self.transitions_per_env, self.num_envs, self.obs_dim),
-                dtype=torch.float32, device=self.device),
             'rewards': torch.zeros(
                 (self.transitions_per_env, self.num_envs, 1),
                 dtype=torch.float32, device=self.device),
@@ -51,6 +50,18 @@ class ExperienceBuffer(Dataset):
                 (self.transitions_per_env, self.num_envs,  1),
                 dtype=torch.float32, device=self.device),
         }
+
+        if isinstance(self.obs_dim, dict):
+            self.storage_dict['obses'] = {}
+            for k, v in self.obs_dim.items():
+                # v is tuple shape e.g. (15,) or (1, 112, 112)
+                self.storage_dict['obses'][k] = torch.zeros(
+                    (self.transitions_per_env, self.num_envs, *v),
+                    dtype=torch.float32, device=self.device)
+        else:
+            self.storage_dict['obses'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs, self.obs_dim),
+                dtype=torch.float32, device=self.device)
 
         self.batch_size = batch_size
         self.minibatch_size = minibatch_size

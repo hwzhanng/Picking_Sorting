@@ -30,7 +30,21 @@ class PPO_Track(object):
         self.actions_low = self.env.get_attr("actions_low")[0]
         self.actions_high = self.env.get_attr("actions_high")[0]
         # self.obs_shape = self.env.observation_space.shape
-        self.obs_shape = (self.env.get_attr("obs_t_dim")[0],)
+        
+        # Define obs_shape as dict for Vision
+        # Vector dim
+        vector_dim = self.env.get_attr("obs_t_dim")[0]
+        # Image shape (C, H, W) - hardcoded or from config
+        # self.ppo_config['img_dim'] is [112, 112]. We need C.
+        # DcmmVecEnv uses depth_array, so C=1.
+        img_h, img_w = self.ppo_config['img_dim']
+        image_shape = (1, img_h, img_w)
+        
+        self.obs_shape = {
+            'vector': (vector_dim,),
+            'image': image_shape
+        }
+        
         self.full_action_dim = self.env.get_attr("act_c_dim")[0]
         self.task = self.env.get_attr("task")[0]
         # ---- Model ----
@@ -39,11 +53,14 @@ class PPO_Track(object):
             'actions_num': self.actions_num,
             'input_shape': self.obs_shape,
             'separate_value_mlp': self.network_config.get('separate_value_mlp', True),
+            'use_vision': full_config.get('use_vision', True),
         }
         print("net_config: ", net_config)
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
-        self.running_mean_std = RunningMeanStd(self.obs_shape).to(self.device)
+        
+        # RunningMeanStd only for vector part
+        self.running_mean_std = RunningMeanStd((vector_dim,)).to(self.device)
         self.value_mean_std = RunningMeanStd((1,)).to(self.device)
         # ---- Output Dir ----
         # allows us to specify a folder where all experiments will reside
@@ -110,7 +127,7 @@ class PPO_Track(object):
         # print("self.obs_shape[0]: ", type(self.obs_shape[0]))
         self.storage = ExperienceBuffer(
             self.num_actors, self.horizon_length, self.batch_size, self.minibatch_size,
-            self.obs_shape[0], self.actions_num, self.device,
+            self.obs_shape, self.actions_num, self.device,
         )
 
         batch_size = self.num_actors
@@ -272,10 +289,16 @@ class PPO_Track(object):
                 value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
                     returns, actions, obs = self.storage[i]
 
-                obs = self.running_mean_std(obs)
+                # obs is a dict {'vector': ..., 'image': ...}
+                vector_obs = self.running_mean_std(obs['vector'])
+                processed_obs = {
+                    'vector': vector_obs,
+                    'image': obs['image']
+                }
+                
                 batch_dict = {
                     'prev_actions': actions,
-                    'obs': obs,
+                    'obs': processed_obs,
                 }
                 res_dict = self.model(batch_dict)
                 action_log_probs = res_dict['prev_neglogp']
@@ -313,7 +336,7 @@ class PPO_Track(object):
                     + b_loss * self.bounds_loss_coef
 
                 self.optimizer.zero_grad()
-                loss.backward(retain_graph=True)
+                loss.backward()
 
                 if self.truncate_grads:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_norm)
@@ -348,6 +371,7 @@ class PPO_Track(object):
     
     def obs2tensor(self, obs):
         # Map the step result to tensor
+        # Vector part
         if self.task == 'Catching':
             obs_array = np.concatenate((
                         obs["base"]["v_lin_2d"], 
@@ -359,11 +383,24 @@ class PPO_Track(object):
             obs_array = np.concatenate((
                     obs["base"]["v_lin_2d"], 
                     obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], obs["arm"]["ee_v_lin_3d"],
-                    obs["object"]["pos3d"], obs["object"]["v_lin_3d"],
+                    obs["object"]["pos3d"],  # Removed v_lin_3d (static object)
                     # obs["hand"],# TODO: TEST
                     ), axis=1)
-        obs_tensor = torch.tensor(obs_array, dtype=torch.float32).to(self.device)
-        return obs_tensor
+        
+        vector_tensor = torch.tensor(obs_array, dtype=torch.float32).to(self.device)
+        
+        # Image part
+        # obs["depth"] is (N, H, W) or (N, 1, H, W)?
+        # render() returns (N, H, W) usually if multiple envs.
+        # We need (N, C, H, W).
+        depth_imgs = obs["depth"]
+        if len(depth_imgs.shape) == 3:
+             # (N, H, W) -> (N, 1, H, W)
+             depth_imgs = np.expand_dims(depth_imgs, axis=1)
+        
+        image_tensor = torch.tensor(depth_imgs, dtype=torch.float32).to(self.device)
+        
+        return {'vector': vector_tensor, 'image': image_tensor}
 
     def action2dict(self, actions):
         actions = actions.cpu().numpy()
@@ -384,7 +421,19 @@ class PPO_Track(object):
         return actions_dict
 
     def model_act(self, obs_dict, inference=False):
-        processed_obs = self.running_mean_std(obs_dict['obs'])
+        # obs_dict['obs'] is {'vector': ..., 'image': ...}
+        # Normalize vector part
+        vector_obs = self.running_mean_std(obs_dict['obs']['vector'])
+        # Image part is already [0, 1] or similar, usually doesn't need RunningMeanStd
+        # But we might want to divide by 255 if it was uint8. 
+        # Here it comes from depth_2_meters which is float meters.
+        # We might want to clamp it? For now pass as is.
+        
+        processed_obs = {
+            'vector': vector_obs,
+            'image': obs_dict['obs']['image']
+        }
+        
         input_dict = {
             'obs': processed_obs,
         }
