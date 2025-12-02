@@ -196,24 +196,56 @@ class PPO_Track(object):
             if self.lr_schedule == 'linear':
                 self.last_lr = self.scheduler.update(self.agent_steps)
             
+            
             all_fps = self.agent_steps / (time.time() - _t)
             last_fps = (
                 self.batch_size ) \
                 / (time.time() - _last_t)
             _last_t = time.time()
-            info_string = f'Agent Steps: {int(self.agent_steps // 1e3):04}K | FPS: {all_fps:.1f} | ' \
-                            f'Last FPS: {last_fps:.1f} | ' \
-                            f'Collect Time: {self.data_collect_time / 60:.1f} min | ' \
-                            f'Train RL Time: {self.rl_train_time / 60:.1f} min | ' \
-                            f'Current Best: {self.best_rewards:.2f}'
-            print(info_string)
-
-            self.write_stats(a_losses, c_losses, b_losses, entropies, kls)
-
+            
+            # Get additional metrics
             mean_rewards = self.episode_rewards.get_mean()
             mean_lengths = self.episode_lengths.get_mean()
             mean_success = self.episode_success.get_mean()
-            # print("mean_rewards: ", mean_rewards)
+            
+            # Enhanced terminal output with rich formatting
+            print("\n" + "="*100)
+            print(f"{'🚀 TRAINING PROGRESS':^100}")
+            print("="*100)
+            
+            # Primary metrics
+            print(f"{'Epoch':<20}: {self.epoch_num:>6d}  |  {'Steps':<20}: {int(self.agent_steps // 1e3):>6d}K / {int(self.max_agent_steps // 1e6):>3d}M")
+            print(f"{'Progress':<20}: {self.agent_steps / self.max_agent_steps * 100:>5.1f}%  |  {'Best Reward':<20}: {self.best_rewards:>8.2f}")
+            
+            print("-"*100)
+            
+            # Performance metrics
+            print(f"{'FPS (Overall)':<20}: {all_fps:>8.1f}  |  {'FPS (Last Batch)':<20}: {last_fps:>8.1f}")
+            print(f"{'Collect Time':<20}: {self.data_collect_time / 60:>7.1f} min  |  {'Train Time':<20}: {self.rl_train_time / 60:>7.1f} min")
+            
+            print("-"*100)
+            
+            # Episode statistics
+            print(f"{'Mean Reward':<20}: {mean_rewards:>8.2f}  |  {'Mean Length':<20}: {mean_lengths:>8.1f}")
+            print(f"{'Success Rate':<20}: {mean_success * 100:>7.1f}%  |  {'Learning Rate':<20}: {self.last_lr:>8.6f}")
+            
+            # Loss metrics (get latest values)
+            latest_a_loss = torch.mean(torch.stack(a_losses)).item()
+            latest_c_loss = torch.mean(torch.stack(c_losses)).item()
+            latest_entropy = torch.mean(torch.stack(entropies)).item()
+            latest_kl = torch.mean(torch.stack(kls)).item()
+            
+            print("-"*100)
+            
+            # Training losses
+            print(f"{'Actor Loss':<20}: {latest_a_loss:>8.4f}  |  {'Critic Loss':<20}: {latest_c_loss:>8.4f}")
+            print(f"{'Entropy':<20}: {latest_entropy:>8.4f}  |  {'KL Divergence':<20}: {latest_kl:>8.6f}")
+            
+            print("="*100 + "\n")
+
+            self.write_stats(a_losses, c_losses, b_losses, entropies, kls)
+
+            # Continue logging to wandb (unchanged)
             self.writer.add_scalar(
                 'metrics/episode_rewards_per_step', mean_rewards, self.agent_steps)
             self.writer.add_scalar(

@@ -278,7 +278,9 @@ class DcmmVecEnv(gym.Env):
         # Curriculum Learning Params
         self.global_step = 0
         self.current_w_stem = DcmmCfg.curriculum.collision_stem_start
+        self.current_w_stem = DcmmCfg.curriculum.collision_stem_start
         self.current_orient_power = DcmmCfg.curriculum.orient_power_start
+        self.last_debug_step = -1
 
     def set_object_eval(self):
         """Set environment to use evaluation objects."""
@@ -436,6 +438,11 @@ class DcmmVecEnv(gym.Env):
         p_end = DcmmCfg.curriculum.orient_power_end
         self.current_orient_power = p_start + (p_end - p_start) * difficulty
         
+        # Debug print (ensure it prints roughly every 10k steps, handling batch jumps)
+        if self.global_step // 10000 > self.last_debug_step // 10000:
+            print(f"[Curriculum] Step: {self.global_step}, Stem Penalty: {self.current_w_stem:.2f}, Orient Power: {self.current_orient_power:.2f}")
+            self.last_debug_step = self.global_step
+
         return self.current_w_stem, self.current_orient_power
 
     def set_global_step(self, step):

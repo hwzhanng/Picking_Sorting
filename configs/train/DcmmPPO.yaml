@@ -13,29 +13,41 @@ ppo:
   normalize_input: True
   normalize_value: True
   value_bootstrap: True
-  num_actors: ${resolve_default:1,${...num_envs}}
+  num_actors: ${resolve_default:8,${...num_envs}}
   reward_scale_value: 0.1
   clip_value_loss: False
   normalize_advantage: True
   gamma: 0.99
   tau: 0.95
-  learning_rate: 5e-4
-  lr_schedule: kl  # 'fixed' | 'linear' | 'kl' | 'cos'
+  
+  # [Modified] Lower learning rate for stability
+  learning_rate: 3e-4 
+  lr_schedule: kl
   kl_threshold: 0.016
+  
   save_best_after: 500
   save_frequency: 2000
-  grad_norm: 1.0
-  entropy_coef: 0.0
+  
+  # [Modified] Stricter gradient clipping
+  grad_norm: 0.5 
+  
+  # [Critical] Enable entropy regularization to prevent early convergence to "playing dead"
+  entropy_coef: 0.01 
+  
   freeze_base: False
   freeze_arm: False
   truncate_grads: True
   e_clip: 0.2
-  action_track_denorm: [1.5, 0.025, 0.01] # 1.5 for the base action, 0.025 for the end-effector action, 0.15 for the hand action
-  # action_catch_denorm: [0.25, 0.01, 0.15] # 1.5 for the base action, 0.025 for the end-effector action, 0.15 for the hand action
+  action_track_denorm: [1.5, 0.025, 0.01]
   action_catch_denorm: [1.5, 0.025, 0.15]
-  horizon_length: 256
+  
+  # [Modified] Increase horizon length for long-term dependency (obstacle avoidance)
+  horizon_length: 512 
+  
+  # Ensure (num_actors * horizon_length) / minibatch_size is integer
   minibatch_size: 512
   mini_epochs: 6
+  
   critic_coef: 4
   clip_value: True
   bounds_loss_coef: 0.0001
