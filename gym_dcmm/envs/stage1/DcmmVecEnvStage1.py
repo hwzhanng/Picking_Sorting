@@ -5,8 +5,8 @@ This file now imports functionality from modular manager classes.
 
 import os
 import sys
-sys.path.append(os.path.abspath('../'))
-sys.path.append(os.path.abspath('./gym_dcmm/'))
+sys.path.append(os.path.abspath('../../'))
+sys.path.append(os.path.abspath('../gym_dcmm/'))
 
 import argparse
 import numpy as np
@@ -18,12 +18,12 @@ from gym_dcmm.agents.MujocoDcmm import MJ_DCMM
 from gymnasium.envs.mujoco.mujoco_rendering import MujocoRenderer
 from collections import deque
 import configs.env.DcmmCfg as DcmmCfg
-from utils.util import get_total_dimension, DynamicDelayBuffer
+from gym_dcmm.utils.util import get_total_dimension, DynamicDelayBuffer
 
 # Import manager classes
 from gym_dcmm.envs.constants import env_key_callback, cmd_lin_x, cmd_lin_y, trigger_delta, trigger_delta_hand, delta_xyz, delta_xyz_hand
 from gym_dcmm.envs.observation_manager import ObservationManager
-from gym_dcmm.envs.reward_manager import RewardManager
+from gym_dcmm.envs.stage1.RewardManagerStage1 import RewardManagerStage1
 from gym_dcmm.envs.randomization_manager import RandomizationManager
 from gym_dcmm.envs.control_manager import ControlManager
 from gym_dcmm.envs.render_manager import RenderManager
@@ -31,7 +31,7 @@ from gym_dcmm.envs.render_manager import RenderManager
 np.set_printoptions(precision=8)
 
 
-class DcmmVecEnv(gym.Env):
+class DcmmVecEnvStage1(gym.Env):
     """
     DCMM Vectorized Environment for mobile manipulation tasks.
 
@@ -105,7 +105,7 @@ class DcmmVecEnv(gym.Env):
 
         # Initialize manager classes
         self.obs_manager = ObservationManager(self)
-        self.reward_manager = RewardManager(self)
+        self.reward_manager = RewardManagerStage1(self)
         self.random_manager = RandomizationManager(self)
         self.control_manager = ControlManager(self)
         self.render_manager = RenderManager(self)
@@ -565,7 +565,7 @@ if __name__ == "__main__":
     parser.add_argument('--imshow_cam', action='store_true', help="imshow the camera image or not")
     args = parser.parse_args()
     print("args: ", args)
-    env = DcmmVecEnv(task='Catching', object_name='object', render_per_step=False,
+    env = DcmmVecEnvStage1(task='Catching', object_name='object', render_per_step=False,
                     print_reward=False, print_info=False,
                     print_contacts=False, print_ctrl=False,
                     print_obs=False, camera_name = ["top"],

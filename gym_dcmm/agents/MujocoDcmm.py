@@ -3,11 +3,11 @@ sys.path.append(os.path.abspath('../'))
 import copy
 import configs.env.DcmmCfg as DcmmCfg
 import mujoco
-from utils.util import calculate_arm_Te
-from utils.pid import PID
+from gym_dcmm.utils.util import calculate_arm_Te
+from gym_dcmm.utils.pid import PID
 import numpy as np
-# from utils.ik_pkg.ik_arm import IKArm
-from utils.ik_pkg.ik_base import IKBase
+# from gym_dcmm.utils.ik_pkg.ik_arm import IKArm  
+from gym_dcmm.utils.ik_pkg.ik_base import IKBase
 from scipy.spatial.transform import Rotation as R
 from collections import deque
 import xml.etree.ElementTree as ET

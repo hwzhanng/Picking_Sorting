@@ -1,6 +1,6 @@
 """
-Reward computation for DcmmVecEnv.
-Handles all reward calculation logic.
+Reward computation for DcmmVecEnvCatch.
+Handles all reward calculation logic for Stage 2 (Catch).
 """
 
 import numpy as np
@@ -8,15 +8,15 @@ import configs.env.DcmmCfg as DcmmCfg
 from gym_dcmm.utils.quat_utils import quat_rotate_vector
 
 
-class RewardManager:
-    """Manages reward computation for the environment."""
+class RewardManagerStage2:
+    """Manages reward computation for the environment (Stage 2 Catch)."""
 
     def __init__(self, env):
         """
         Initialize reward manager.
 
         Args:
-            env: Reference to the parent DcmmVecEnv instance
+            env: Reference to the parent DcmmVecEnvCatch instance
         """
         self.env = env
         self.prev_action_reward = None
@@ -71,7 +71,7 @@ class RewardManager:
             # Get positions
             ee_pos = self.env.Dcmm.data.body("link6").xpos
             obj_pos = self.env.Dcmm.data.body(self.env.object_name).xpos
-
+            
             # Direction from hand to target
             ee_to_obj = obj_pos - ee_pos
             ee_to_obj_norm = ee_to_obj / (np.linalg.norm(ee_to_obj) + 1e-6)
@@ -152,4 +152,3 @@ class RewardManager:
             print(f"total reward: {rewards:.3f}\n")
 
         return rewards
-

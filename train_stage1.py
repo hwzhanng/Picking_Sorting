@@ -9,9 +9,7 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 from termcolor import cprint
 from gym_dcmm.utils.util import omegaconf_to_dict
-from gym_dcmm.algs.ppo_dcmm.ppo_dcmm_catch_two_stage import PPO_Catch_TwoStage
-from gym_dcmm.algs.ppo_dcmm.ppo_dcmm_catch_one_stage import PPO_Catch_OneStage
-from gym_dcmm.algs.ppo_dcmm.ppo_dcmm_track import PPO_Track
+from gym_dcmm.algs.ppo_dcmm.stage1.PPO_Stage1 import PPO_Stage1
 import gymnasium as gym
 import gym_dcmm
 import datetime
@@ -19,7 +17,7 @@ import pytz
 # os.environ['MUJOCO_GL'] = 'egl'
 OmegaConf.register_new_resolver('resolve_default', lambda default, arg: default if arg=='' else arg)
 
-@hydra.main(config_name='config', config_path='configs')
+@hydra.main(config_name='config_stage1', config_path='configs')
 def main(config: DictConfig):
     torch.multiprocessing.set_start_method('spawn')
     config.test = config.test
@@ -57,7 +55,7 @@ def main(config: DictConfig):
                     print_obs = False, print_info = False,
                     print_reward = False, print_ctrl = False,
                     print_contacts = False, object_eval = config.object_eval,
-                    env_time = 4.0, steps_per_policy = 20)
+                    env_time = 5.0, steps_per_policy = 20)
 
     output_dif = os.path.join('outputs', config.output_name)
     # Get the local date and time
@@ -67,10 +65,7 @@ def main(config: DictConfig):
     output_dif = os.path.join(output_dif, current_datetime_str)
     os.makedirs(output_dif, exist_ok=True)
 
-    PPO = PPO_Track if config.task == 'Tracking' else \
-          PPO_Catch_TwoStage if config.task == 'Catching_TwoStage' else \
-          PPO_Catch_OneStage
-    agent = PPO(env, output_dif, full_config=config)
+    agent = PPO_Stage1(env, output_dif, full_config=config)
 
     cprint('Start Training/Testing the Agent', 'green', attrs=['bold'])
     if config.test:

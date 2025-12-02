@@ -1,1 +1,2 @@
-from gym_dcmm.envs.DcmmVecEnv import DcmmVecEnv
+from gym_dcmm.envs.stage1.DcmmVecEnvStage1 import DcmmVecEnvStage1
+from gym_dcmm.envs.stage2.DcmmVecEnvStage2 import DcmmVecEnvStage2

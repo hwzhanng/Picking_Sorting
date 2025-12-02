@@ -1,5 +1,5 @@
 import os, sys
-sys.path.append(os.path.abspath('../gym_dcmm'))
+sys.path.append(os.path.abspath('../../../gym_dcmm'))
 import math
 import time
 import torch
@@ -9,13 +9,13 @@ import wandb
 
 import numpy as np
 
-from .experience import ExperienceBuffer
-from .models_track import ActorCritic
-from .utils import AverageScalarMeter, RunningMeanStd
+from gym_dcmm.algs.ppo_dcmm.experience import ExperienceBuffer
+from gym_dcmm.algs.ppo_dcmm.stage2.ModelsStage2 import ActorCritic
+from gym_dcmm.algs.ppo_dcmm.utils import AverageScalarMeter, RunningMeanStd
 
 from tensorboardX import SummaryWriter
 
-class PPO_Track(object):
+class PPO_Stage2(object):
     def __init__(self, env, output_dif, full_config):
         self.rank = -1
         self.device = full_config['rl_device']
@@ -25,26 +25,12 @@ class PPO_Track(object):
         self.env = env
         self.num_actors = int(self.ppo_config['num_actors'])
         print("num_actors: ", self.num_actors)
-        self.actions_num = self.env.get_attr("act_t_dim")[0]
+        self.actions_num = self.env.get_attr("act_c_dim")[0]
         print("actions_num: ", self.actions_num)
         self.actions_low = self.env.get_attr("actions_low")[0]
         self.actions_high = self.env.get_attr("actions_high")[0]
-        # self.obs_shape = self.env.observation_space.shape
-        
-        # Define obs_shape as dict for Vision
-        # Vector dim
-        vector_dim = self.env.get_attr("obs_t_dim")[0]
-        # Image shape (C, H, W) - hardcoded or from config
-        # self.ppo_config['img_dim'] is [112, 112]. We need C.
-        # DcmmVecEnv uses depth_array, so C=1.
-        img_h, img_w = self.ppo_config['img_dim']
-        image_shape = (1, img_h, img_w)
-        
-        self.obs_shape = {
-            'vector': (vector_dim,),
-            'image': image_shape
-        }
-        
+        self.obs_shape = (self.env.get_attr("obs_c_dim")[0],)
+        self.obs_t_shape = (self.env.get_attr("obs_t_dim")[0],) # remove the hand part
         self.full_action_dim = self.env.get_attr("act_c_dim")[0]
         self.task = self.env.get_attr("task")[0]
         # ---- Model ----
@@ -53,15 +39,16 @@ class PPO_Track(object):
             'actions_num': self.actions_num,
             'input_shape': self.obs_shape,
             'separate_value_mlp': self.network_config.get('separate_value_mlp', True),
-            'use_vision': full_config.get('use_vision', True),
         }
         print("net_config: ", net_config)
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
-        
-        # RunningMeanStd only for vector part
-        self.running_mean_std = RunningMeanStd((vector_dim,)).to(self.device)
+        self.running_mean_std_track = RunningMeanStd(self.obs_t_shape).to(self.device)
+        self.running_mean_std_hand = RunningMeanStd((12,)).to(self.device)
         self.value_mean_std = RunningMeanStd((1,)).to(self.device)
+        # print("### Start loading tracking model")
+        self.load_tracking_model(full_config.checkpoint_tracking, full_config.checkpoint_catching)
+        # print("### Done loading tracking model")
         # ---- Output Dir ----
         # allows us to specify a folder where all experiments will reside
         self.output_dir = output_dif
@@ -121,13 +108,11 @@ class PPO_Track(object):
         self.episode_test_rewards = AverageScalarMeter(self.ppo_config['test_num_episodes'])
         self.episode_test_lengths = AverageScalarMeter(self.ppo_config['test_num_episodes'])
         self.episode_test_success = AverageScalarMeter(self.ppo_config['test_num_episodes'])
-
         self.obs = None
         self.epoch_num = 0
-        # print("self.obs_shape[0]: ", type(self.obs_shape[0]))
         self.storage = ExperienceBuffer(
             self.num_actors, self.horizon_length, self.batch_size, self.minibatch_size,
-            self.obs_shape, self.actions_num, self.device,
+            self.obs_shape[0], self.actions_num, self.device,
         )
 
         batch_size = self.num_actors
@@ -143,6 +128,31 @@ class PPO_Track(object):
         self.data_collect_time = 0
         self.rl_train_time = 0
         self.all_time = 0
+
+        self.hard_case = False
+
+    def load_tracking_model(self, checkpoint_tracking, checkpoint_catching):
+        """
+        Save actor and critic model parameters to files.
+
+        actor_path: Path to save actor model parameters.
+        """
+        print("### Start loading tracking model")
+        if checkpoint_tracking and not checkpoint_catching:
+            self.model.actor_mlp_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mlp'])
+            self.model.mu_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mu'])
+            self.model.sigma_t.data.copy_(torch.load(checkpoint_tracking, map_location=self.device)['tracking_sigma'])
+            print("self.model.sigma_t.data: ", self.model.sigma_t.data)
+            self.running_mean_std_track.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['running_mean_std'])
+        
+        # Freeze the tracking model
+        for param in self.model.actor_mlp_t.parameters():
+            param.requires_grad = False
+        for param in self.model.mu_t.parameters():
+            param.requires_grad = False
+        self.model.sigma_t.requires_grad = False
+        
+        print("### Done loading tracking model")
 
     def write_stats(self, a_losses, c_losses, b_losses, entropies, kls):
         log_dict = {
@@ -169,14 +179,16 @@ class PPO_Track(object):
     def set_eval(self):
         self.model.eval()
         if self.normalize_input:
-            self.running_mean_std.eval()
+            self.running_mean_std_track.eval()
+            self.running_mean_std_hand.eval()
         if self.normalize_value:
             self.value_mean_std.eval()
 
     def set_train(self):
         self.model.train()
         if self.normalize_input:
-            self.running_mean_std.train()
+            self.running_mean_std_track.train()
+            self.running_mean_std_hand.train()
         if self.normalize_value:
             self.value_mean_std.train()
 
@@ -195,63 +207,32 @@ class PPO_Track(object):
 
             if self.lr_schedule == 'linear':
                 self.last_lr = self.scheduler.update(self.agent_steps)
-            
-            
+
             all_fps = self.agent_steps / (time.time() - _t)
             last_fps = (
-                self.batch_size ) \
+                self.batch_size) \
                 / (time.time() - _last_t)
             _last_t = time.time()
-            
-            # Get additional metrics
-            mean_rewards = self.episode_rewards.get_mean()
-            mean_lengths = self.episode_lengths.get_mean()
-            mean_success = self.episode_success.get_mean()
-            
-            # Enhanced terminal output with rich formatting
-            print("\n" + "="*100)
-            print(f"{'🚀 TRAINING PROGRESS':^100}")
-            print("="*100)
-            
-            # Primary metrics
-            print(f"{'Epoch':<20}: {self.epoch_num:>6d}  |  {'Steps':<20}: {int(self.agent_steps // 1e3):>6d}K / {int(self.max_agent_steps // 1e6):>3d}M")
-            print(f"{'Progress':<20}: {self.agent_steps / self.max_agent_steps * 100:>5.1f}%  |  {'Best Reward':<20}: {self.best_rewards:>8.2f}")
-            
-            print("-"*100)
-            
-            # Performance metrics
-            print(f"{'FPS (Overall)':<20}: {all_fps:>8.1f}  |  {'FPS (Last Batch)':<20}: {last_fps:>8.1f}")
-            print(f"{'Collect Time':<20}: {self.data_collect_time / 60:>7.1f} min  |  {'Train Time':<20}: {self.rl_train_time / 60:>7.1f} min")
-            
-            print("-"*100)
-            
-            # Episode statistics
-            print(f"{'Mean Reward':<20}: {mean_rewards:>8.2f}  |  {'Mean Length':<20}: {mean_lengths:>8.1f}")
-            print(f"{'Success Rate':<20}: {mean_success * 100:>7.1f}%  |  {'Learning Rate':<20}: {self.last_lr:>8.6f}")
-            
-            # Loss metrics (get latest values)
-            latest_a_loss = torch.mean(torch.stack(a_losses)).item()
-            latest_c_loss = torch.mean(torch.stack(c_losses)).item()
-            latest_entropy = torch.mean(torch.stack(entropies)).item()
-            latest_kl = torch.mean(torch.stack(kls)).item()
-            
-            print("-"*100)
-            
-            # Training losses
-            print(f"{'Actor Loss':<20}: {latest_a_loss:>8.4f}  |  {'Critic Loss':<20}: {latest_c_loss:>8.4f}")
-            print(f"{'Entropy':<20}: {latest_entropy:>8.4f}  |  {'KL Divergence':<20}: {latest_kl:>8.6f}")
-            
-            print("="*100 + "\n")
+            info_string = f'Agent Steps: {int(self.agent_steps // 1e3):04}K | FPS: {all_fps:.1f} | ' \
+                            f'Last FPS: {last_fps:.1f} | ' \
+                            f'Collect Time: {self.data_collect_time / 60:.1f} min | ' \
+                            f'Train RL Time: {self.rl_train_time / 60:.1f} min | ' \
+                            f'Current Best: {self.best_rewards:.2f}'
+            print(info_string)
 
             self.write_stats(a_losses, c_losses, b_losses, entropies, kls)
 
-            # Continue logging to wandb (unchanged)
+            mean_rewards = self.episode_rewards.get_mean()
+            mean_lengths = self.episode_lengths.get_mean()
+            mean_success = self.episode_success.get_mean()
+
             self.writer.add_scalar(
                 'metrics/episode_rewards_per_step', mean_rewards, self.agent_steps)
             self.writer.add_scalar(
                 'metrics/episode_lengths_per_step', mean_lengths, self.agent_steps)
             self.writer.add_scalar(
                 'metrics/episode_success_per_step', mean_success, self.agent_steps)
+            
             wandb.log({
                 'metrics/episode_rewards_per_step': mean_rewards,
                 'metrics/episode_lengths_per_step': mean_lengths,
@@ -281,12 +262,11 @@ class PPO_Track(object):
     def save(self, name):
         weights = {
             'model': self.model.state_dict(),
-            'tracking_mlp': self.model.actor_mlp.state_dict(),
-            'tracking_mu': self.model.mu.state_dict(),
-            'tracking_sigma': self.model.sigma.data
         }
-        if self.running_mean_std:
-            weights['running_mean_std'] = self.running_mean_std.state_dict()
+        if self.running_mean_std_track:
+            weights['running_mean_std_track'] = self.running_mean_std_track.state_dict()
+        if self.running_mean_std_hand:
+            weights['running_mean_std_hand'] = self.running_mean_std_hand.state_dict()
         if self.value_mean_std:
             weights['value_mean_std'] = self.value_mean_std.state_dict()
         torch.save(weights, f'{name}.pth')
@@ -296,13 +276,17 @@ class PPO_Track(object):
             return
         checkpoint = torch.load(fn, map_location = self.device)
         self.model.load_state_dict(checkpoint['model'])
-        self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
-
+        self.running_mean_std_track.load_state_dict(checkpoint['running_mean_std_track'])
+        self.running_mean_std_hand.load_state_dict(checkpoint['running_mean_std_hand'])
+    
     def restore_test(self, fn):
         checkpoint = torch.load(fn, map_location = self.device)
-        self.model.load_state_dict(checkpoint['model'])
         if self.normalize_input:
-            self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
+            self.running_mean_std_track.load_state_dict(checkpoint['running_mean_std_track'])
+            self.running_mean_std_hand.load_state_dict(checkpoint['running_mean_std_hand'])
+        if not fn:
+            return
+        self.model.load_state_dict(checkpoint['model'])
 
     def train_epoch(self):
         # collect minibatch data
@@ -321,16 +305,14 @@ class PPO_Track(object):
                 value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
                     returns, actions, obs = self.storage[i]
 
-                # obs is a dict {'vector': ..., 'image': ...}
-                vector_obs = self.running_mean_std(obs['vector'])
-                processed_obs = {
-                    'vector': vector_obs,
-                    'image': obs['image']
-                }
-                
+                obs_track = self.running_mean_std_track(obs[:,:-12])
+                obs_hand = self.running_mean_std_hand(obs[:,-12:])
+                obs = torch.cat((obs_track, obs_hand), dim=1)
                 batch_dict = {
                     'prev_actions': actions,
-                    'obs': processed_obs,
+                    'obs': obs,
+                    'obs_t': obs[:,:-12],
+                    'obs_c': obs[:,2:],
                 }
                 res_dict = self.model(batch_dict)
                 action_log_probs = res_dict['prev_neglogp']
@@ -396,43 +378,32 @@ class PPO_Track(object):
                 self.last_lr = self.adjust_learning_rate_cos(mini_ep)
 
             for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.last_lr
+                    param_group['lr'] = self.last_lr
 
         self.rl_train_time += (time.time() - _t)
         return a_losses, c_losses, b_losses, entropies, kls
     
-    def obs2tensor(self, obs):
+    def obs2tensor(self, obs, task=''):
+        if task == '':
+            task = self.task
         # Map the step result to tensor
-        # Vector part
-        if self.task == 'Catching':
+        if task == 'Catching':
             obs_array = np.concatenate((
                         obs["base"]["v_lin_2d"], 
-                        obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], obs["arm"]["ee_v_lin_3d"],
-                        obs["object"]["pos3d"], obs["object"]["v_lin_3d"], 
+                        obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], 
+                        obs["arm"]["ee_v_lin_3d"],
+                        obs["object"]["pos3d"], 
                         obs["hand"],
                         ), axis=1)
         else:
             obs_array = np.concatenate((
                     obs["base"]["v_lin_2d"], 
-                    obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], obs["arm"]["ee_v_lin_3d"],
-                    obs["object"]["pos3d"],  # Removed v_lin_3d (static object)
-                    # obs["hand"],# TODO: TEST
+                    obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], 
+                    obs["arm"]["ee_v_lin_3d"], 
+                    obs["object"]["pos3d"]
                     ), axis=1)
-        
-        vector_tensor = torch.tensor(obs_array, dtype=torch.float32).to(self.device)
-        
-        # Image part
-        # obs["depth"] is (N, H, W) or (N, 1, H, W)?
-        # render() returns (N, H, W) usually if multiple envs.
-        # We need (N, C, H, W).
-        depth_imgs = obs["depth"]
-        if len(depth_imgs.shape) == 3:
-             # (N, H, W) -> (N, 1, H, W)
-             depth_imgs = np.expand_dims(depth_imgs, axis=1)
-        
-        image_tensor = torch.tensor(depth_imgs, dtype=torch.float32).to(self.device)
-        
-        return {'vector': vector_tensor, 'image': image_tensor}
+        obs_tensor = torch.tensor(obs_array, dtype=torch.float32).to(self.device)
+        return obs_tensor
 
     def action2dict(self, actions):
         actions = actions.cpu().numpy()
@@ -453,21 +424,13 @@ class PPO_Track(object):
         return actions_dict
 
     def model_act(self, obs_dict, inference=False):
-        # obs_dict['obs'] is {'vector': ..., 'image': ...}
-        # Normalize vector part
-        vector_obs = self.running_mean_std(obs_dict['obs']['vector'])
-        # Image part is already [0, 1] or similar, usually doesn't need RunningMeanStd
-        # But we might want to divide by 255 if it was uint8. 
-        # Here it comes from depth_2_meters which is float meters.
-        # We might want to clamp it? For now pass as is.
-        
-        processed_obs = {
-            'vector': vector_obs,
-            'image': obs_dict['obs']['image']
-        }
-        
+        processed_obs_track = self.running_mean_std_track(obs_dict['obs'][:, :-12])
+        processed_obs_hand = self.running_mean_std_hand(obs_dict['obs'][:, -12:])
+        processed_obs = torch.cat((processed_obs_track, processed_obs_hand), dim=1)
         input_dict = {
             'obs': processed_obs,
+            'obs_t': processed_obs[:,:-12],
+            'obs_c': processed_obs[:,2:],
         }
         if not inference:
             res_dict = self.model.act(input_dict)
@@ -476,14 +439,8 @@ class PPO_Track(object):
             res_dict = {}
             res_dict['actions'] = self.model.act_inference(input_dict)
         return res_dict
-
+    
     def play_steps(self):
-        # Update curriculum with current global step
-        if hasattr(self.env, 'env_method'):
-            self.env.env_method("set_global_step", int(self.agent_steps))
-        elif hasattr(self.env, 'set_global_step'):
-            self.env.set_global_step(int(self.agent_steps))
-
         for n in range(self.horizon_length):
             res_dict = self.model_act(self.obs)
             # Collect o_t
@@ -491,7 +448,7 @@ class PPO_Track(object):
             for k in ['actions', 'neglogpacs', 'values', 'mus', 'sigmas']:
                 self.storage.update_data(k, n, res_dict[k])
             # Do env step
-            # Clamp the actions of the action space
+            # Clamp the actions of the action space 
             actions = res_dict['actions']
             actions[:,:] = torch.clamp(actions[:,:], -1, 1)
             actions = torch.nn.functional.pad(actions, (0, self.full_action_dim-actions.size(1)), value=0)
@@ -515,7 +472,6 @@ class PPO_Track(object):
 
             self.current_rewards += rewards
             self.current_lengths += 1
-            # print("self.dones: ", self.dones)
             done_indices = self.dones.nonzero(as_tuple=False)
             # print("done_indices: ", done_indices)
             self.episode_rewards.update(self.current_rewards[done_indices])
@@ -569,6 +525,7 @@ class PPO_Track(object):
             dones = terminates | truncates
             self.dones = torch.tensor(dones, dtype=torch.uint8).to(self.device)
             # Update dones and rewards after env step
+
             self.current_rewards += rewards
             self.current_lengths += 1
             done_indices = self.dones.nonzero(as_tuple=False)
@@ -625,6 +582,7 @@ def policy_kl(p0_mu, p0_sigma, p1_mu, p1_sigma):
     kl = kl.sum(dim=-1)  # returning mean between all steps of sum between all actions
     return kl.mean()
 
+
 class AdaptiveScheduler(object):
     def __init__(self, kl_threshold=0.008):
         super().__init__()
@@ -639,6 +597,7 @@ class AdaptiveScheduler(object):
         if kl_dist < (0.5 * self.kl_threshold):
             lr = min(current_lr * 1.5, self.max_lr)
         return lr
+
 
 class LinearScheduler:
     def __init__(self, start_lr, max_steps=1000000):
