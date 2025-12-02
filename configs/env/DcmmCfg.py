@@ -154,3 +154,16 @@ hand_mask = np.array([1, 0, 1, 1,
                       1, 0, 1, 1,
                       1, 0, 1, 1,
                       0, 1, 1, 1])
+
+class curriculum:
+    # Define stage switching thresholds (steps)
+    stage1_steps = 2e6  # First 2M steps
+    stage2_steps = 6e6  # Up to 6M steps
+    
+    # Stem collision penalty changes
+    collision_stem_start = -1.0
+    collision_stem_end = -20.0
+    
+    # Orientation strictness changes (power)
+    orient_power_start = 1.0
+    orient_power_end = 4.0

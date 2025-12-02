@@ -88,9 +88,17 @@ class RenderManager:
                 elif self.env.render_mode == "depth_array":
                     img = self.env.Dcmm.depth_2_meters(img)
                     if self.env.imshow_cam:
-                        depth_norm = np.zeros(img.shape, dtype=np.uint8)
-                        cv.convertScaleAbs(img, depth_norm, alpha=(255.0/img.max()))
-                        cv.imshow(camera_name+"_depth", depth_norm)
+                        # Debug: Print stats
+                        print(f"Depth stats: Min={img.min():.4f}, Max={img.max():.4f}")
+                        
+                        # Normalize to 0-255
+                        depth_vis = cv.normalize(img, None, 0, 255, cv.NORM_MINMAX)
+                        depth_vis = depth_vis.astype(np.uint8)
+                        
+                        # Apply Colormap
+                        depth_color = cv.applyColorMap(depth_vis, cv.COLORMAP_JET)
+                        
+                        cv.imshow(camera_name+"_depth", depth_color)
                         cv.waitKey(1)
 
                     # Resize to match self.img_size

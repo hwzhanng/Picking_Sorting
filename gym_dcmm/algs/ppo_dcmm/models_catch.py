@@ -46,11 +46,11 @@ class ActorCritic(nn.Module):
         self.value_mlp = MLP(units=self.units, input_size=mlp_input_shape)
         self.value = torch.nn.Linear(out_size, 1)
         self.mu_t = torch.nn.Linear(out_size, actions_num-12)
-        self.mu_c = torch.nn.Linear(out_size, actions_num-6)
+        self.mu_c = torch.nn.Linear(out_size, actions_num-8)
         self.sigma_t = nn.Parameter(
             torch.zeros(actions_num-12, requires_grad=True, dtype=torch.float32), requires_grad=True)
         self.sigma_c = nn.Parameter(
-            torch.zeros(actions_num-6, requires_grad=True, dtype=torch.float32), requires_grad=True)
+            torch.zeros(actions_num-8, requires_grad=True, dtype=torch.float32), requires_grad=True)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d):

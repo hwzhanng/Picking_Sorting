@@ -407,12 +407,12 @@ class PPO_Track(object):
         # De-normalize the actions
         if self.task == 'Tracking':
             base_tensor = actions[:, :2] * self.action_track_denorm[0]
-            arm_tensor = actions[:, 2:5] * self.action_track_denorm[1]
-            hand_tensor = actions[:, 5:] * self.action_track_denorm[2]
+            arm_tensor = actions[:, 2:8] * self.action_track_denorm[1]
+            hand_tensor = actions[:, 8:] * self.action_track_denorm[2]
         else:
             base_tensor = actions[:, :2] * self.action_catch_denorm[0]
-            arm_tensor = actions[:, 2:5] * self.action_catch_denorm[1]
-            hand_tensor = actions[:, 5:] * self.action_catch_denorm[2]
+            arm_tensor = actions[:, 2:8] * self.action_catch_denorm[1]
+            hand_tensor = actions[:, 8:] * self.action_catch_denorm[2]
         actions_dict = {
             'arm': arm_tensor,
             'base': base_tensor,
@@ -446,6 +446,12 @@ class PPO_Track(object):
         return res_dict
 
     def play_steps(self):
+        # Update curriculum with current global step
+        if hasattr(self.env, 'env_method'):
+            self.env.env_method("set_global_step", int(self.agent_steps))
+        elif hasattr(self.env, 'set_global_step'):
+            self.env.set_global_step(int(self.agent_steps))
+
         for n in range(self.horizon_length):
             res_dict = self.model_act(self.obs)
             # Collect o_t

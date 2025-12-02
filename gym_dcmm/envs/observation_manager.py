@@ -115,6 +115,18 @@ class ObservationManager:
         # Add depth image if render mode is set
         if self.env.render_mode is not None:
             imgs = self.env.render()
+            
+            # Add Gaussian Noise
+            noise = np.random.normal(0, 0.05, imgs.shape)
+            imgs = imgs + noise
+            
+            # Add Random Holes (Dropout 5-10%)
+            mask = np.random.rand(*imgs.shape) > np.random.uniform(0.05, 0.10)
+            imgs = imgs * mask
+            
+            # Clip to be non-negative
+            imgs = np.clip(imgs, 0, None)
+            
             obs["depth"] = imgs.astype(np.float32)
         else:
             obs["depth"] = np.zeros((1, self.env.img_size[0], self.env.img_size[1]), dtype=np.float32)

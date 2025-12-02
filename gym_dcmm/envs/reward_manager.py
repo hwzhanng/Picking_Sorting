@@ -56,15 +56,18 @@ class RewardManager:
         Returns:
             float: Total reward
         """
-        # 1. EE Reaching Reward: Linear positive shaping
-        reward_reaching = max(0.0, 5.0 - info["ee_distance"])
+        # 1. EE Reaching Reward: Normalized tanh (0.0 to 1.0)
+        # When d=0, reward=1.0; when d is large, reward -> 0.0
+        reward_reaching = 1.0 * (1.0 - np.tanh(2.0 * info["ee_distance"]))
 
-        # 2. Base Approach Reward: Encourage vehicle to move closer
-        reward_base_approach = max(0.0, 2.0 - info["base_distance"])
+        # 2. Base Approach Reward: Sweet Spot at 0.8m
+        optimal_dist = 0.8
+        dist_error = abs(info["base_distance"] - optimal_dist)
+        reward_base_approach = np.exp(-5.0 * dist_error**2)
 
-        # 3. Orientation Reward: Palm should face target (extended trigger range)
+        # 3. Orientation Reward: Palm should face target (Stricter 4th power)
         reward_orientation = 0.0
-        if info["ee_distance"] < 2.0:  # Extended from 1.0m to 2.0m
+        if info["ee_distance"] < 2.0:
             # Get positions
             ee_pos = self.env.Dcmm.data.body("link6").xpos
             obj_pos = self.env.Dcmm.data.body(self.env.object_name).xpos
@@ -80,8 +83,9 @@ class RewardManager:
 
             # Alignment: 1.0 = perfect, 0.0 = perpendicular, -1.0 = backwards
             alignment = np.dot(palm_forward, ee_to_obj_norm)
-            # Increased from 1.0 to 2.0 for stronger signal
-            reward_orientation = max(0, alignment) * 2.0
+            
+            # Stricter alignment reward (Dynamic power)
+            reward_orientation = max(0, alignment) ** self.env.current_orient_power * 2.0
 
         # 4. Touch Reward: SIGNIFICANTLY increased (core objective)
         # Modified to penalize high-velocity impacts (Gentle Touch)
@@ -96,10 +100,6 @@ class RewardManager:
             base_touch_reward = 10.0
 
             # Penalty for high speed impact (Encourage speed < 0.5 m/s)
-            # Weight = 4.0:
-            # 0.1 m/s -> -0.4 (Reward 9.6)
-            # 1.0 m/s -> -4.0 (Reward 6.0)
-            # 2.5 m/s -> -10.0 (Reward 0.0)
             reward_impact = -4.0 * impact_speed
 
             reward_touch = base_touch_reward + reward_impact
@@ -115,15 +115,14 @@ class RewardManager:
         # 7. Plant Collision Penalty: Differentiated
         reward_plant_collision = 0.0
 
-        # Stem Collision (Rigid, Avoid!)
+        # Stem Collision (Rigid, Avoid! - Dynamic Penalty)
         if self.env.contacts['plant_contacts'].size != 0:
-            reward_plant_collision += -2.0
+            reward_plant_collision += self.env.current_w_stem
 
-        # Leaf Collision (Soft, Gentle interaction allowed)
+        # Leaf Collision (Soft, Gentle interaction allowed - Velocity dependent)
         if self.env.contacts['leaf_contacts'].size != 0:
-            # Penalize based on velocity to encourage gentle pushing
             ee_vel = np.linalg.norm(self.env.Dcmm.data.body("link6").cvel[3:6])
-            reward_plant_collision += -0.1 * (1.0 + ee_vel)
+            reward_plant_collision += -0.5 * (1.0 + ee_vel)
 
         # 8. Action Rate Penalty (Smoothness)
         # Flatten current action dict

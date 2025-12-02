@@ -410,12 +410,12 @@ class PPO_Catch_TwoStage(object):
         # De-normalize the actions
         if self.task == 'Tracking':
             base_tensor = actions[:, :2] * self.action_track_denorm[0]
-            arm_tensor = actions[:, 2:6] * self.action_track_denorm[1]
-            hand_tensor = actions[:, 6:] * self.action_track_denorm[2]
+            arm_tensor = actions[:, 2:8] * self.action_track_denorm[1]
+            hand_tensor = actions[:, 8:] * self.action_track_denorm[2]
         else:
             base_tensor = actions[:, :2] * self.action_catch_denorm[0]
-            arm_tensor = actions[:, 2:6] * self.action_catch_denorm[1]
-            hand_tensor = actions[:, 6:] * self.action_catch_denorm[2]
+            arm_tensor = actions[:, 2:8] * self.action_catch_denorm[1]
+            hand_tensor = actions[:, 8:] * self.action_catch_denorm[2]
         actions_dict = {
             'arm': arm_tensor,
             'base': base_tensor,

@@ -150,11 +150,11 @@ class ControlManager:
         # Construct raw action vector (18 dims)
         # Base (2)
         base_action = action_dict.get('base', np.zeros(2))
-        # Arm (4)
-        arm_action = action_dict.get('arm', np.zeros(4))
-        if arm_action.size == 3:
-            # Pad to 4 dims (x, y, z, yaw=0)
-            arm_action = np.concatenate([arm_action, [0.0]])
+        # Arm (6)
+        arm_action = action_dict.get('arm', np.zeros(6))
+        if arm_action.size != 6:
+            # Resize to 6 dims if necessary
+            arm_action = np.zeros(6)
         # Hand (12)
         if 'hand' in action_dict:
             hand_action = action_dict['hand']
@@ -172,18 +172,27 @@ class ControlManager:
 
         # Deconstruct smoothed action
         action_dict['base'] = smoothed_action[0:2]
-        action_dict['arm'] = smoothed_action[2:6]
-        action_dict['hand'] = smoothed_action[6:18]
+        action_dict['arm'] = smoothed_action[2:8]
+        action_dict['hand'] = smoothed_action[8:20]
 
         ## Update target base velocity
         self.env.Dcmm.target_base_vel[0:2] = action_dict['base']
 
-        # Use only first 3 dims of arm action (x, y, z) for move_ee_pose
-        action_arm = np.concatenate((action_dict["arm"][:3], np.zeros(3)))
-        result_QP, _ = self.env.Dcmm.move_ee_pose(action_arm)
-        if result_QP[1]:
+        # Joint Space Control
+        action_arm = action_dict["arm"]
+        self.env.Dcmm.target_arm_qpos[:] += action_arm
+        
+        # Clip to joint limits
+        self.env.Dcmm.target_arm_qpos[:] = np.clip(
+            self.env.Dcmm.target_arm_qpos[:],
+            self.env.Dcmm.model.jnt_range[9:15, 0],
+            self.env.Dcmm.model.jnt_range[9:15, 1]
+        )
+        
+        # Check if arm is at limit (simple check)
+        if np.any(self.env.Dcmm.target_arm_qpos[:] == self.env.Dcmm.model.jnt_range[9:15, 0]) or \
+           np.any(self.env.Dcmm.target_arm_qpos[:] == self.env.Dcmm.model.jnt_range[9:15, 1]):
             self.env.arm_limit = True
-            self.env.Dcmm.target_arm_qpos[:] = result_QP[0]
         else:
             self.env.arm_limit = False
 

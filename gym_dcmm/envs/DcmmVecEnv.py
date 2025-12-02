@@ -175,8 +175,8 @@ class DcmmVecEnv(gym.Env):
         # Define action space
         base_low = np.array([-4, -4])
         base_high = np.array([4, 4])
-        arm_low = -0.025*np.ones(4)
-        arm_high = 0.025*np.ones(4)
+        arm_low = -0.05*np.ones(6)
+        arm_high = 0.05*np.ones(6)
         hand_low = np.array([self.Dcmm.model.jnt_range[i][0] for i in hand_joint_indices])
         hand_high = np.array([self.Dcmm.model.jnt_range[i][1] for i in hand_joint_indices])
 
@@ -200,7 +200,8 @@ class DcmmVecEnv(gym.Env):
         self.action_space = spaces.Dict(
             {
                 "base": spaces.Box(base_low, base_high, shape=(2,), dtype=np.float32),
-                "arm": spaces.Box(arm_low, arm_high, shape=(4,), dtype=np.float32),
+                "arm": spaces.Box(arm_low, arm_high, shape=(6,), dtype=np.float32),
+                "hand": spaces.Box(hand_low, hand_high, shape=(12,), dtype=np.float32),
             }
         )
 
@@ -218,9 +219,9 @@ class DcmmVecEnv(gym.Env):
         self.act_dim = get_total_dimension(self.action_space)
         # Dimension for training
         self.obs_t_dim = 2 + 3 + 4 + 3 + 3  # Total: 15
-        self.act_t_dim = self.act_dim # dim = 6
+        self.act_t_dim = 8 # 2 base + 6 arm
         self.obs_c_dim = self.obs_dim - 6  # dim = 30
-        self.act_c_dim = self.act_dim # dim = 18
+        self.act_c_dim = 20 # 2 base + 6 arm + 12 hand
         print("##### Tracking Task \n obs_dim: {}, act_dim: {}".format(self.obs_t_dim, self.act_t_dim))
         print("##### Catching Task \n obs_dim: {}, act_dim: {}\n".format(self.obs_c_dim, self.act_c_dim))
 
@@ -236,7 +237,7 @@ class DcmmVecEnv(gym.Env):
         self.stage = self.stage_list[0]
         self.steps = 0
 
-        self.prev_ctrl = np.zeros(18)
+        self.prev_ctrl = np.zeros(20)
         self.init_ctrl = True
         self.vel_init = False
         self.vel_history = deque(maxlen=4)
@@ -273,6 +274,11 @@ class DcmmVecEnv(gym.Env):
         self.k_obs_hand = DcmmCfg.k_obs_hand
         self.k_obs_object = DcmmCfg.k_obs_object
         self.k_act = DcmmCfg.k_act
+
+        # Curriculum Learning Params
+        self.global_step = 0
+        self.current_w_stem = DcmmCfg.curriculum.collision_stem_start
+        self.current_orient_power = DcmmCfg.curriculum.orient_power_start
 
     def set_object_eval(self):
         """Set environment to use evaluation objects."""
@@ -359,7 +365,7 @@ class DcmmVecEnv(gym.Env):
         self.steps = 0
 
         # Reset Action Filter
-        self.prev_action = np.zeros(18) # 2 base + 4 arm + 12 hand
+        self.prev_action = np.zeros(20) # 2 base + 6 arm + 12 hand
         self.alpha_lpf = 0.3 # Smoothing factor
 
         # Reset the time
@@ -410,6 +416,32 @@ class DcmmVecEnv(gym.Env):
 
         return observation, info
 
+    def update_curriculum_difficulty(self):
+        # Calculate curriculum coefficient alpha (0 to 1)
+        current_step = self.global_step
+        
+        # Simple linear interpolation logic
+        # 0 ~ 6M steps: Difficulty increases from 0.0 to 1.0
+        # > 6M steps: Difficulty locked at 1.0 (Full)
+        max_steps = DcmmCfg.curriculum.stage2_steps
+        difficulty = min(max(current_step / max_steps, 0.0), 1.0)
+        
+        # Dynamic adjustment of Stem Collision Penalty
+        w_stem_start = DcmmCfg.curriculum.collision_stem_start
+        w_stem_end = DcmmCfg.curriculum.collision_stem_end
+        self.current_w_stem = w_stem_start + (w_stem_end - w_stem_start) * difficulty
+        
+        # Dynamic adjustment of Orientation Strictness
+        p_start = DcmmCfg.curriculum.orient_power_start
+        p_end = DcmmCfg.curriculum.orient_power_end
+        self.current_orient_power = p_start + (p_end - p_start) * difficulty
+        
+        return self.current_w_stem, self.current_orient_power
+
+    def set_global_step(self, step):
+        """Set the global training step for curriculum learning."""
+        self.global_step = step
+
     def step(self, action):
         """
         Execute one environment step.
@@ -420,6 +452,9 @@ class DcmmVecEnv(gym.Env):
         Returns:
             tuple: (observation, reward, terminated, truncated, info)
         """
+        # Update curriculum parameters based on global step
+        self.update_curriculum_difficulty()
+
         try:
             self.steps += 1
             self.control_manager.step_mujoco_simulation(action)
@@ -491,27 +526,27 @@ class DcmmVecEnv(gym.Env):
         """Run a manual test with keyboard control."""
         import gym_dcmm.envs.constants as constants
         self.reset()
-        action = np.zeros(18)
+        action = np.zeros(20)
         while True:
             # Keyboard control
             action[0:2] = np.array([constants.cmd_lin_x, constants.cmd_lin_y])
             if constants.trigger_delta:
                 print("delta_xyz: ", constants.delta_xyz)
-                action[2:6] = np.array([constants.delta_xyz]*4)
+                action[2:8] = np.array([constants.delta_xyz]*6)
                 constants.trigger_delta = False
             else:
-                action[2:6] = np.zeros(4)
+                action[2:8] = np.zeros(6)
             if constants.trigger_delta_hand:
                 print("delta_xyz_hand: ", constants.delta_xyz_hand)
-                action[6:18] = np.ones(12)*constants.delta_xyz_hand
+                action[8:20] = np.ones(12)*constants.delta_xyz_hand
                 constants.trigger_delta_hand = False
             else:
-                action[6:18] = np.zeros(12)
+                action[8:20] = np.zeros(12)
 
             actions_dict = {
-                'arm': action[2:6],
+                'arm': action[2:8],
                 'base': action[:2],
-                'hand': action[6:18]
+                'hand': action[8:20]
             }
             observation, reward, terminated, truncated, info = self.step(actions_dict)
 
