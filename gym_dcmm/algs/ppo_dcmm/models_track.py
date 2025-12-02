@@ -30,15 +30,24 @@ class CNNBase(nn.Module):
     def __init__(self, input_shape, hidden_size=256):
         super(CNNBase, self).__init__()
         # Input shape is (C, H, W)
-        # Assuming input is depth image (1, 112, 112) or similar
+        # Assuming input is depth image (1, 224, 224)
         
         self.main = nn.Sequential(
-            nn.Conv2d(input_shape[0], 32, 8, stride=4),
+            # Layer 1
+            nn.Conv2d(input_shape[0], 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, 4, stride=2),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            # Layer 2
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, 32, 3, stride=1),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            # Layer 3
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
             nn.Flatten(),
         )
         
