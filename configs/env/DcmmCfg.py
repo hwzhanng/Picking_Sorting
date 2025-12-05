@@ -18,8 +18,9 @@ WEIGHT_PATH = os.path.join(ASSET_PATH, "weights")
 distance_thresh = 0.25
 
 ## Define the initial joint positions of the arm and the hand
+# Semi-raised state for Stage 2
 arm_joints = np.array([
-   0.0, 0.0, -0.0, 3.07, 2.25, -1.5 
+   0.0, -0.5, -0.0, 1.5, 0.0, 0.0 
 ])
 
 hand_joints = np.array([

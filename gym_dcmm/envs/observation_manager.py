@@ -8,6 +8,8 @@ from gym_dcmm.utils.quat_utils import quat_rotate_vector
 import cv2 as cv
 
 
+import mujoco
+
 class ObservationManager:
     """Manages observation collection for the environment."""
 
@@ -155,3 +157,43 @@ class ObservationManager:
         hand_obs = self.env.Dcmm.data.qpos[hand_joint_indices].astype(np.float32)
         return hand_obs
 
+    def get_state_obs_stage2(self):
+        """
+        Get the flattened state observation for Stage 2 (Catching/Tracking).
+        Includes: Arm (Pos, Quat, Vel, Joints), Object (Pos), Hand (Joints), Touch.
+        Excludes: Base, Depth.
+        
+        Returns:
+            np.ndarray: Flattened state vector
+        """
+        # 1. Arm Data
+        ee_pos = self.get_relative_ee_pos3d().astype(np.float32)
+        ee_quat = self.get_relative_ee_quat().astype(np.float32)
+        ee_vel = self.get_relative_ee_v_lin_3d().astype(np.float32)
+        arm_joints = self.env.Dcmm.data.qpos[15:21].astype(np.float32)
+        
+        # 2. Object Data
+        obj_pos = self.get_relative_object_pos3d().astype(np.float32)
+        # Note: Object velocity is not in the original list for Stage 2 in DcmmVecEnvStage2.py's observation_space
+        # But let's check DcmmVecEnvStage2.py line 170: "object": spaces.Dict({"pos3d": ...})
+        # It seems only pos3d is used for object in Stage 2 observation space definition.
+        
+        # 3. Hand Data
+        hand_joints = self.get_hand_obs()
+        
+        # 4. Touch Data
+        touch_force = np.zeros(4, dtype=np.float32)
+        for i, name in enumerate(["sensor_touch_thumb", "sensor_touch_index", "sensor_touch_middle", "sensor_touch_ring"]):
+            sensor_id = mujoco.mj_name2id(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+            if sensor_id != -1:
+                touch_force[i] = self.env.Dcmm.data.sensordata[sensor_id]
+        
+        # Flatten and Concatenate
+        state_obs = np.concatenate([
+            ee_pos, ee_quat, ee_vel, arm_joints,
+            obj_pos,
+            hand_joints,
+            touch_force
+        ])
+        
+        return state_obs

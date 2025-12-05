@@ -83,7 +83,7 @@ class RenderManager:
                 )
                 if self.env.imshow_cam and self.env.render_mode == "rgb_array":
                     cv.imshow(camera_name, cv.cvtColor(img, cv.COLOR_BGR2RGB))
-                    cv.waitKey(1)
+                    cv.waitKey(50)
                 # Converts the depth array valued from 0-1 to real meters
                 elif self.env.render_mode == "depth_array":
                     img = self.env.Dcmm.depth_2_meters(img)
@@ -99,7 +99,7 @@ class RenderManager:
                         depth_color = cv.applyColorMap(depth_vis, cv.COLORMAP_JET)
                         
                         cv.imshow(camera_name+"_depth", depth_color)
-                        cv.waitKey(1)
+                        cv.waitKey(50)
 
                     # Resize to match self.img_size
                     img = cv.resize(img, (self.env.img_size[1], self.env.img_size[0]))
@@ -119,7 +119,7 @@ class RenderManager:
                 if self.env.imshow_cam:
                     cv.imshow(camera_name+"_rgb", cv.cvtColor(img_rgb, cv.COLOR_BGR2RGB))
                     cv.imshow(camera_name+"_depth", img_depth)
-                    cv.waitKey(1)
+                    cv.waitKey(50)
                 img_depth = cv.resize(img_depth, (self.env.img_size[1], self.env.img_size[0]))
                 img_depth = np.expand_dims(img_depth, axis=0)
                 imgs_depth = np.concatenate((imgs_depth, img_depth), axis=0)
@@ -133,3 +133,57 @@ class RenderManager:
 
         return imgs
 
+    def get_depth_obs(self, width=84, height=84, camera_name="top", add_noise=True, add_holes=True):
+        """
+        Get depth observation from a specific camera.
+        
+        Args:
+            width (int): Target width
+            height (int): Target height
+            camera_name (str): Name of the camera to render
+            add_noise (bool): Whether to add Gaussian noise
+            add_holes (bool): Whether to add random holes (dropout)
+            
+        Returns:
+            np.ndarray: Depth image (1, height, width) in uint8 (0-255)
+        """
+        # Render depth array (0-1 value, where 1 is far plane usually, but depends on renderer)
+        # MujocoRenderer returns depth in meters if we use depth_2_meters, 
+        # but raw depth_array is usually normalized 0-1 or similar.
+        # Let's use the existing render logic which gets depth_array.
+        
+        depth_img = self.env.mujoco_renderer.render("depth_array", camera_name=camera_name)
+        
+        # Convert to meters for consistency with other parts, or just use raw 0-1?
+        # The user wants "visual robustness".
+        # Let's convert to meters first to have a physical meaning for noise?
+        # Or just work in 0-1 space. 
+        # Existing render() converts to meters: img = self.env.Dcmm.depth_2_meters(img)
+        # Let's do that.
+        depth_meters = self.env.Dcmm.depth_2_meters(depth_img)
+        
+        # Resize
+        depth_resized = cv.resize(depth_meters, (width, height), interpolation=cv.INTER_AREA)
+        
+        if add_noise:
+            # Add Gaussian Noise
+            noise = np.random.normal(0, 0.05, depth_resized.shape)
+            depth_resized = depth_resized + noise
+            
+        if add_holes:
+            # Add Random Holes (Dropout 5-10%)
+            mask = np.random.rand(*depth_resized.shape) > np.random.uniform(0.05, 0.10)
+            depth_resized = depth_resized * mask
+            
+        # Clip to be non-negative
+        depth_resized = np.clip(depth_resized, 0, None)
+        
+        # Normalize to 0-255 uint8
+        # We need a max depth to normalize against. 
+        # Assuming max relevant depth is around 3.0 meters (arm workspace).
+        max_depth = 3.0
+        depth_norm = np.clip(depth_resized / max_depth, 0, 1)
+        depth_uint8 = (depth_norm * 255).astype(np.uint8)
+        
+        # Add channel dimension (1, H, W)
+        return np.expand_dims(depth_uint8, axis=0)

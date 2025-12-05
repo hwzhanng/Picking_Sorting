@@ -55,9 +55,15 @@ class ExperienceBuffer(Dataset):
             self.storage_dict['obses'] = {}
             for k, v in self.obs_dim.items():
                 # v is tuple shape e.g. (15,) or (1, 112, 112)
-                self.storage_dict['obses'][k] = torch.zeros(
-                    (self.transitions_per_env, self.num_envs, *v),
-                    dtype=torch.float32, device=self.device)
+                # Use uint8 for depth to save 75% memory (1 byte vs 4 bytes per pixel)
+                if k == 'depth':
+                    self.storage_dict['obses'][k] = torch.zeros(
+                        (self.transitions_per_env, self.num_envs, *v),
+                        dtype=torch.uint8, device=self.device)
+                else:
+                    self.storage_dict['obses'][k] = torch.zeros(
+                        (self.transitions_per_env, self.num_envs, *v),
+                        dtype=torch.float32, device=self.device)
         else:
             self.storage_dict['obses'] = torch.zeros(
                 (self.transitions_per_env, self.num_envs, self.obs_dim),
@@ -116,7 +122,11 @@ class ExperienceBuffer(Dataset):
     def prepare_training(self):
         self.data_dict = {}
         for k, v in self.storage_dict.items():
-            self.data_dict[k] = transform_op(v)
+            transformed = transform_op(v)
+            # Convert uint8 depth back to float32 for neural network
+            if isinstance(transformed, dict) and 'depth' in transformed:
+                transformed['depth'] = transformed['depth'].float() / 255.0
+            self.data_dict[k] = transformed
         advantages = self.data_dict['returns'] - self.data_dict['values']
         self.data_dict['advantages'] = (
             (advantages - advantages.mean()) / (advantages.std() + 1e-8)).squeeze(1)

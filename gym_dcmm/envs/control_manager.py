@@ -20,6 +20,20 @@ class ControlManager:
             env: Reference to the parent DcmmVecEnv instance
         """
         self.env = env
+        self.plant_geom_ids = []
+        self.leaf_geom_ids = []
+        self._cache_plant_geoms()
+
+    def _cache_plant_geoms(self):
+        """Cache plant and leaf geom IDs to avoid repeated lookups."""
+        for i in range(self.env.Dcmm.model.ngeom):
+            body_id = self.env.Dcmm.model.geom_bodyid[i]
+            body_name = mujoco.mj_id2name(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+            if body_name:
+                if body_name.startswith("plant_stem"):
+                    self.plant_geom_ids.append(i)
+                elif body_name.startswith("plant_leaf"):
+                    self.leaf_geom_ids.append(i)
 
     def get_contacts(self):
         """
@@ -28,8 +42,6 @@ class ControlManager:
         Returns:
             dict: Dictionary containing contact information for different components
         """
-        plant_geom_ids = []
-        leaf_geom_ids = []
         geom_ids = self.env.Dcmm.data.contact.geom
         geom1_ids = self.env.Dcmm.data.contact.geom1
         geom2_ids = self.env.Dcmm.data.contact.geom2
@@ -65,20 +77,11 @@ class ControlManager:
         base_contacts = np.concatenate((contacts_geom1, contacts_geom2))
 
         ## get the contact points of the plant
-        # Efficient approach: Iterate over all geoms once
-        for i in range(self.env.Dcmm.model.ngeom):
-            body_id = self.env.Dcmm.model.geom_bodyid[i]
-            body_name = mujoco.mj_id2name(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, body_id)
-            if body_name:
-                if body_name.startswith("plant_stem"):
-                    plant_geom_ids.append(i)
-                elif body_name.startswith("plant_leaf"):
-                    leaf_geom_ids.append(i)
-
+        # Use cached IDs
         plant_contacts = np.array([])
         leaf_contacts = np.array([])
 
-        for pid in plant_geom_ids:
+        for pid in self.plant_geom_ids:
             g1 = np.where((geom1_ids == pid))[0]
             g2 = np.where((geom2_ids == pid))[0]
             if g1.size != 0:
@@ -86,7 +89,7 @@ class ControlManager:
             if g2.size != 0:
                 plant_contacts = np.concatenate((plant_contacts, geom_ids[g2][:,0]))
 
-        for lid in leaf_geom_ids:
+        for lid in self.leaf_geom_ids:
             g1 = np.where((geom1_ids == lid))[0]
             g2 = np.where((geom2_ids == lid))[0]
             if g1.size != 0:
@@ -223,8 +226,13 @@ class ControlManager:
             self.env.contacts = self.get_contacts()
 
             # Whether the base collides
+            # Ignore floor collisions for base termination
             if self.env.contacts['base_contacts'].size != 0:
-                self.env.terminated = True
+                # Check if contact is with floor
+                is_floor = np.isin(self.env.contacts['base_contacts'], [self.env.floor_id])
+                # If there are contacts OTHER than floor, terminate
+                if np.any(~is_floor):
+                    self.env.terminated = True
 
             mask_coll = self.env.contacts['object_contacts'] < self.env.hand_start_id
             mask_finger = self.env.contacts['object_contacts'] > self.env.hand_start_id
@@ -241,9 +249,36 @@ class ControlManager:
             # Whether the object falls
             if not self.env.terminated:
                 if self.env.task == "Catching":
-                    self.env.terminated = np.any(mask_coll)
+                    # Ignore plant/leaf collisions for object termination
+                    is_plant = np.isin(self.env.contacts['object_contacts'], self.plant_geom_ids + self.leaf_geom_ids)
+                    
+                    # mask_coll was: object_contacts < hand_start_id
+                    # This includes plants (usually).
+                    # We want to terminate if object touches something that is NOT hand AND NOT plant.
+                    
+                    # object_contacts contains IDs of OTHER geoms.
+                    # We want to check if ANY of these IDs are "bad".
+                    # Bad = NOT hand AND NOT plant.
+                    
+                    # is_hand = object_contacts >= hand_start_id
+                    # is_plant = isin(object_contacts, plant_ids)
+                    # is_bad = ~(is_hand | is_plant)
+                    
+                    is_hand = self.env.contacts['object_contacts'] >= self.env.hand_start_id
+                    is_bad = ~(is_hand | is_plant)
+                    
+                    self.env.terminated = np.any(is_bad)
+                    
                 elif self.env.task == "Tracking":
-                    self.env.terminated = np.any(mask_coll) or np.any(mask_finger)
+                    # For tracking, we also ignore plant collisions?
+                    # Original: np.any(mask_coll) or np.any(mask_finger)
+                    # mask_finger means touching fingers (bad for tracking, want palm).
+                    
+                    is_plant = np.isin(self.env.contacts['object_contacts'], self.plant_geom_ids + self.leaf_geom_ids)
+                    is_hand = self.env.contacts['object_contacts'] >= self.env.hand_start_id
+                    is_bad_coll = ~(is_hand | is_plant)
+                    
+                    self.env.terminated = np.any(is_bad_coll) or np.any(mask_finger)
 
             # If the object falls, terminate the episode in advance
             if self.env.terminated:

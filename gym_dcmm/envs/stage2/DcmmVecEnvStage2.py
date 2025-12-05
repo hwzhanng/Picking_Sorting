@@ -151,30 +151,21 @@ class DcmmVecEnvStage2(gym.Env):
 
         # Define observation space
         hand_joint_indices = np.where(DcmmCfg.hand_mask == 1)[0] + 15
-        self.observation_space = spaces.Dict(
-            {
-                "base": spaces.Dict({
-                    "v_lin_2d": spaces.Box(-4, 4, shape=(2,), dtype=np.float32),
-                }),
-                "arm": spaces.Dict({
-                    "ee_pos3d": spaces.Box(-10, 10, shape=(3,), dtype=np.float32),
-                    "ee_quat": spaces.Box(-1, 1, shape=(4,), dtype=np.float32),
-                    "ee_v_lin_3d": spaces.Box(-1, 1, shape=(3,), dtype=np.float32),
-                    "joint_pos": spaces.Box(
-                        low = np.array([self.Dcmm.model.jnt_range[i][0] for i in range(9, 15)]),
-                        high = np.array([self.Dcmm.model.jnt_range[i][1] for i in range(9, 15)]),
-                        dtype=np.float32),
-                }),
-                "object": spaces.Dict({
-                    "pos3d": spaces.Box(-10, 10, shape=(3,), dtype=np.float32),
-                }),
-                "hand": spaces.Box(
-                    low = np.array([self.Dcmm.model.jnt_range[i][0] for i in hand_joint_indices]),
-                    high = np.array([self.Dcmm.model.jnt_range[i][1] for i in hand_joint_indices]),
-                    dtype=np.float32),
-                "depth": spaces.Box(low=0, high=1.0, shape=(1, self.img_size[0], self.img_size[1]), dtype=np.float32),
-            }
-        )
+        
+        # State dimension calculation:
+        # Arm: 3 (pos) + 4 (quat) + 3 (vel) + 6 (joints) = 16
+        # Object: 3 (pos) = 3
+        # Hand: 12 (joints) = 12
+        # Touch: 4 (sensors) = 4
+        # Total State: 35
+        self.state_dim = 35
+        self.img_width = 84
+        self.img_height = 84
+        
+        self.observation_space = spaces.Dict({
+            'state': spaces.Box(low=-np.inf, high=np.inf, shape=(self.state_dim,), dtype=np.float32),
+            'depth': spaces.Box(low=0, high=255, shape=(1, self.img_height, self.img_width), dtype=np.uint8)
+        })
 
         # Define action space
         base_low = np.array([-4, -4])
@@ -203,7 +194,7 @@ class DcmmVecEnvStage2(gym.Env):
 
         self.action_space = spaces.Dict(
             {
-                "base": spaces.Box(base_low, base_high, shape=(2,), dtype=np.float32),
+                # "base": spaces.Box(base_low, base_high, shape=(2,), dtype=np.float32),
                 "arm": spaces.Box(arm_low, arm_high, shape=(6,), dtype=np.float32),
                 "hand": spaces.Box(hand_low, hand_high, shape=(12,), dtype=np.float32),
             }
@@ -216,16 +207,33 @@ class DcmmVecEnvStage2(gym.Env):
         }
 
         # Combine the limits of the action space
-        self.actions_low = np.concatenate([base_low, arm_low, hand_low])
-        self.actions_high = np.concatenate([base_high, arm_high, hand_high])
+        self.actions_low = np.concatenate([arm_low, hand_low])
+        self.actions_high = np.concatenate([arm_high, hand_high])
 
-        self.obs_dim = get_total_dimension(self.observation_space)
-        self.act_dim = get_total_dimension(self.action_space)
         # Dimension for training
-        self.obs_t_dim = 2 + 3 + 4 + 3 + 3  # Total: 15
-        self.act_t_dim = 8 # 2 base + 6 arm
-        self.obs_c_dim = self.obs_dim - 6  # dim = 30
-        self.act_c_dim = 20 # 2 base + 6 arm + 12 hand
+        # obs_c_dim should represent the TOTAL flattened dimension for PPO buffer
+        # State (35) + Depth (84*84 = 7056) = 7091
+        self.obs_c_dim = self.state_dim + (self.img_width * self.img_height)
+        
+        # obs_t_dim is for Tracking task (Stage 1). 
+        # If Stage 1 also uses this Env, we need to be careful.
+        # But this file is DcmmVecEnvStage2.py. 
+        # Assuming Stage 1 uses DcmmVecEnv.py (original).
+        # However, this class supports "Tracking" task too (line 39).
+        # If "Tracking" in Stage 2 also uses depth, we should use the same dim.
+        # If "Tracking" is blind, we use state_dim.
+        # For now, let's assume both use the new structure or at least Catching does.
+        # The user only asked for "Catching" task modification in the prompt ("models_catch.py").
+        # But let's set obs_t_dim to match obs_c_dim for consistency if needed, 
+        # or keep it as state_dim if Tracking is blind.
+        # User prompt: "models_catch.py ... ActorCritic ... Critic (Value) ... state + depth".
+        # Let's set obs_c_dim as calculated.
+        
+        self.act_c_dim = 20 # 2 base + 6 arm + 12 hand (Full control)
+        # Note: act_t_dim was 6 (Arm only).
+        self.act_t_dim = 6
+        self.obs_t_dim = self.state_dim
+        
         print("##### Tracking Task \n obs_dim: {}, act_dim: {}".format(self.obs_t_dim, self.act_t_dim))
         print("##### Catching Task \n obs_dim: {}, act_dim: {}\n".format(self.obs_c_dim, self.act_c_dim))
 
@@ -263,6 +271,7 @@ class DcmmVecEnvStage2(gym.Env):
         self.object_pos3d = np.array([0, 0, 1.5])
         self.object_vel6d = np.array([0., 0., 1.25, 0.0, 0.0, 0.0])
         self.step_touch = False
+        self.stable_touch_timer = 0.0 # Timer for stable touch success
 
         self.imgs = np.zeros((0, self.img_size[0], self.img_size[1], 1))
 
@@ -336,13 +345,43 @@ class DcmmVecEnvStage2(gym.Env):
         self.Dcmm.data.qpos[15:21] = DcmmCfg.arm_joints[:]
         self.Dcmm.data.qpos[21:37] = DcmmCfg.hand_joints[:]
         self.Dcmm.data_arm.qpos[0:6] = DcmmCfg.arm_joints[:]
+        self.Dcmm.data_arm.qpos[0:6] = DcmmCfg.arm_joints[:]
         self.Dcmm.data.body("object").xpos[0:3] = np.array([2, 2, 1])
 
-        # Randomize plants and fruit
-        self.random_manager.randomize_plants()
-        self.random_manager.randomize_fruit_and_occlusion()
-
-        # Set the object position (fruit is mocap)
+        # Stage 2 Initialization: Hand 5cm-20cm from fruit
+        # 1. Get object position (randomized later, but we need a target)
+        # For now, let's assume object is at a random position in front
+        obj_pos = np.array([0.8 + np.random.uniform(-0.1, 0.1), 
+                            1.25 + np.random.uniform(-0.1, 0.1), 
+                            1.2 + np.random.uniform(-0.1, 0.1)])
+        
+        # 2. Sample a point on a sphere shell around object (r in [0.05, 0.20])
+        r = np.random.uniform(0.05, 0.20)
+        theta = np.random.uniform(0, np.pi) # Polar angle
+        phi = np.random.uniform(0, 2*np.pi) # Azimuthal angle
+        
+        dx = r * np.sin(theta) * np.cos(phi)
+        dy = r * np.sin(theta) * np.sin(phi)
+        dz = r * np.cos(theta)
+        
+        # Hand target position
+        hand_pos = obj_pos + np.array([dx, dy, dz])
+        
+        # Note: We can't easily set IK here without a solver. 
+        # Instead, we rely on the "semi-raised" arm_joints config to be roughly in the workspace,
+        # and maybe we can just set the object relative to the hand?
+        # User said: "生成的灵巧手在距离上需要距离果实20cm以内，5厘米以外"
+        # Easier approach: Spawn object relative to the End Effector's initial position!
+        
+        # Get EE position from forward kinematics of the semi-raised arm
+        mujoco.mj_forward(self.Dcmm.model, self.Dcmm.data)
+        ee_pos = self.Dcmm.data.body("link6").xpos
+        
+        # Set object position relative to EE
+        self.object_pos3d = ee_pos + np.array([dx, dy, dz])
+        
+        # Ensure object is above ground
+        self.object_pos3d[2] = max(self.object_pos3d[2], 0.1)
         object_body_id = mujoco.mj_name2id(self.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, "object")
         if object_body_id != -1:
             object_mocap_id = self.Dcmm.model.body_mocapid[object_body_id]
@@ -392,6 +431,7 @@ class DcmmVecEnvStage2(gym.Env):
         self.terminated = False
         self.reward_touch = 0
         self.contact_count = 0  # Reset contact counter
+        self.stable_touch_timer = 0.0
         self.reward_stability = 0
 
         self.info = {
@@ -405,8 +445,23 @@ class DcmmVecEnvStage2(gym.Env):
         # Get the observation and info
         self.prev_ee_pos3d[:] = self.initial_ee_pos3d[:]
         self.prev_obj_pos3d = self.obs_manager.get_relative_object_pos3d()
-        observation = self.obs_manager.get_obs()
-        observation['hand'] = self.obs_manager.get_hand_obs()
+        
+        # 1. Get State
+        state_obs = self.obs_manager.get_state_obs_stage2()
+        
+        # 2. Get Depth
+        depth_obs = self.render_manager.get_depth_obs(
+            width=self.img_width, height=self.img_height, 
+            add_noise=True, add_holes=True
+        )
+        
+        # 3. Assemble
+        observation = {
+            'state': state_obs,
+            'depth': depth_obs,
+            'touch': state_obs[-4:] # Add touch for RewardManager
+        }
+        
         info = self._get_info()
 
         # Rendering
@@ -469,11 +524,34 @@ class DcmmVecEnvStage2(gym.Env):
 
         try:
             self.steps += 1
+            
+            # Lock Base: Force base action to zero
+            action['base'] = np.zeros(2)
+            
             self.control_manager.step_mujoco_simulation(action)
 
             # Get the obs and info
-            obs = self.obs_manager.get_obs()
-            obs['hand'] = self.obs_manager.get_hand_obs()
+            # 1. Get State
+            state_obs = self.obs_manager.get_state_obs_stage2()
+            
+            # 2. Get Depth
+            # Use 84x84 as configured
+            depth_obs = self.render_manager.get_depth_obs(
+                width=self.img_width, height=self.img_height, 
+                add_noise=True, add_holes=True
+            )
+            
+            # 3. Assemble
+            obs = {
+                'state': state_obs,
+                'depth': depth_obs,
+                'touch': state_obs[-4:] # Add touch for RewardManager
+            }
+            
+            # Legacy support removal:
+            # We don't need to manually delete 'base' or add 'touch' here anymore
+            # because get_state_obs_stage2 handles it.
+            
             info = self._get_info()
 
             if self.task == 'Catching':
@@ -506,17 +584,32 @@ class DcmmVecEnvStage2(gym.Env):
                 else:
                     truncated = False
             elif self.task == "Tracking":
-                # Require sustained contact (10 steps) before success
-                if self.step_touch:
-                    self.contact_count += 1
-                    if self.contact_count >= 10:
-                        truncated = True
-                    else:
-                        truncated = False
+                # Success Condition: 2 seconds of stable soft touch
+                # Check if current touch is "stable" (1.0N <= force <= 2.5N)
+                total_force = np.sum(obs['touch'])
+                if 1.0 <= total_force <= 2.5:
+                    self.stable_touch_timer += self.Dcmm.model.opt.timestep * self.steps_per_policy
                 else:
-                    # Lost contact, reset counter
-                    self.contact_count = 0
-                    truncated = False
+                    self.stable_touch_timer = 0.0
+                
+                if self.stable_touch_timer >= 2.0:
+                    terminated = True
+                    info['is_success'] = True
+                    print("SUCCESS: Stable soft touch for 2.0s!")
+                else:
+                    terminated = False
+                    
+                # Old logic removed/replaced
+                # if self.step_touch:
+                #     self.contact_count += 1
+                #     if self.contact_count >= 10:
+                #         truncated = True
+                #     else:
+                #         truncated = False
+                # else:
+                #     # Lost contact, reset counter
+                #     self.contact_count = 0
+                #     truncated = False
 
             terminated = self.terminated
             done = terminated or truncated
@@ -572,7 +665,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print("args: ", args)
     env = DcmmVecEnvStage2(task='Catching', object_name='object', render_per_step=False,
-                    print_reward=False, print_info=False,
+                    print_reward=True, print_info=True,
                     print_contacts=False, print_ctrl=False,
                     print_obs=False, camera_name = ["top"],
                     render_mode="rgb_array", imshow_cam=args.imshow_cam,

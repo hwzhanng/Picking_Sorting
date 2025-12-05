@@ -264,3 +264,122 @@ class RandomizationManager:
         self.env.action_buffer["arm"].clear()
         self.env.action_buffer["hand"].clear()
 
+    def randomize_stage2_scene(self):
+        """
+        Stage 2 Specific Randomization:
+        1. Randomize Plants.
+        2. Select Target Stem & Fruit.
+        3. Teleport Robot Base (Domain Randomization).
+        4. Place Occluder based on NEW robot position.
+        5. Include "Bad" States (Singularity/Occlusion).
+        """
+        # 1. Randomize Plants (Standard)
+        self.randomize_plants()
+
+        # 2. Select Target Stem
+        target_idx = np.random.randint(0, 8)
+        target_stem_name = f"plant_stem_{target_idx}"
+        target_body_id = mujoco.mj_name2id(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, target_stem_name)
+        target_mocap_id = self.env.Dcmm.model.body_mocapid[target_body_id]
+        target_pos = self.env.Dcmm.data.mocap_pos[target_mocap_id].copy()
+
+        # 3. Teleport Robot Base
+        # Determine "Front" direction relative to the stem
+        # We want the robot to be roughly "facing" the stem/fruit, but the fruit is ON the stem.
+        # Let's define the approach angle.
+        
+        # Decide if this is a "Bad" state (10% chance)
+        is_bad_state = np.random.random() < 0.1
+        
+        if is_bad_state:
+            # Bad State: Extreme distances or difficult angles
+            case = np.random.randint(0, 3)
+            if case == 0: # Too Far (Singularity risk)
+                dist = np.random.uniform(1.0, 1.2)
+            elif case == 1: # Too Close (Cramped)
+                dist = np.random.uniform(0.35, 0.45)
+            else: # Difficult Angle (Behind the stem?)
+                dist = np.random.uniform(0.6, 0.8)
+                # No specific angle logic yet, just rely on random angle potentially being bad?
+                # Or maybe force it to be "behind" the fruit relative to some feature?
+                pass
+        else:
+            # Normal State: Optimal working distance
+            dist = np.random.uniform(0.6, 1.0)
+
+        # Random Angle around the target
+        # Since the stem is vertical, we pick an angle in the XY plane.
+        # "Azimuth front 180 degrees" - let's assume this means we pick a random angle
+        # and orient the robot to face the target.
+        angle = np.random.uniform(-np.pi, np.pi)
+        
+        # Calculate Robot Base Position
+        # Robot is placed at 'dist' away from target in direction 'angle'
+        # So Robot Pos = Target Pos + Vector(dist, angle)
+        # Wait, if we want the robot to *face* the target, the vector from Robot to Target is (cos(theta), sin(theta))
+        # So Robot is at Target - Vector.
+        
+        robot_x = target_pos[0] + dist * np.cos(angle)
+        robot_y = target_pos[1] + dist * np.sin(angle)
+        
+        # Robot Orientation (Yaw)
+        # Robot should face the target.
+        # Vector from Robot to Target: (target_x - robot_x, target_y - robot_y)
+        # Yaw = atan2(dy, dx)
+        yaw = np.arctan2(target_pos[1] - robot_y, target_pos[0] - robot_x)
+        
+        # Convert Yaw to Quaternion (w, x, y, z)
+        # Axis: (0, 0, 1), Angle: yaw
+        # q = [cos(yaw/2), 0, 0, sin(yaw/2)]
+        cy = np.cos(yaw * 0.5)
+        sy = np.sin(yaw * 0.5)
+        robot_quat = np.array([cy, 0, 0, sy])
+        
+        # Set Robot Base State (qpos 0-6)
+        self.env.Dcmm.data.qpos[0:3] = np.array([robot_x, robot_y, 0.0]) # Z=0 for ground
+        self.env.Dcmm.data.qpos[3:7] = robot_quat
+        
+        # 4. Place Occluder
+        # Select Occluder Stem (must be different from target)
+        occluder_idx = (target_idx + 1) % 8
+        occluder_stem_name = f"plant_stem_{occluder_idx}"
+        occluder_body_id = mujoco.mj_name2id(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, occluder_stem_name)
+        occluder_mocap_id = self.env.Dcmm.model.body_mocapid[occluder_body_id]
+        
+        # Calculate Occluder Position
+        # Place between Robot and Target
+        # Ratio: 0.3 to 0.7 (closer to robot or closer to fruit)
+        ratio = np.random.uniform(0.3, 0.7)
+        
+        # If "Bad" state (Occlusion), make it harder
+        if is_bad_state and np.random.random() < 0.5:
+             # Hard Occlusion: Directly in line, close to fruit
+             ratio = np.random.uniform(0.7, 0.9)
+        
+        occluder_pos = np.array([robot_x, robot_y, 0]) + ratio * (target_pos - np.array([robot_x, robot_y, 0]))
+        
+        # Add some noise to occluder position so it's not always perfectly centered (unless bad state)
+        if not is_bad_state:
+            occluder_pos[0] += np.random.uniform(-0.1, 0.1)
+            occluder_pos[1] += np.random.uniform(-0.1, 0.1)
+            
+        self.env.Dcmm.data.mocap_pos[occluder_mocap_id] = occluder_pos
+        
+        # 5. Attach Fruit to Target Stem
+        # Random height on stem (0.8m - 1.5m)
+        height = np.random.uniform(0.8, 1.5)
+        
+        # Orientation of fruit relative to stem
+        # If we want the fruit to be "reachable", it should probably face the robot?
+        # Or random? Real fruits are random.
+        # Let's add a small offset from the stem center.
+        offset_angle = np.random.uniform(-np.pi, np.pi)
+        offset_r = 0.05 # 5cm radius from stem center
+        
+        fruit_x = target_pos[0] + offset_r * np.cos(offset_angle)
+        fruit_y = target_pos[1] + offset_r * np.sin(offset_angle)
+        
+        self.env.object_pos3d = np.array([fruit_x, fruit_y, height])
+        self.env.object_vel6d = np.zeros(6)
+        self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
+

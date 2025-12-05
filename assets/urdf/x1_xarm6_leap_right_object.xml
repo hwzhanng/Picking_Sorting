@@ -249,6 +249,7 @@
                                                     <joint name="3" pos="0 0 0" axis="0 0 -1" limited="true" range="-0.366 2.042" />
                                                     <geom name="fingertip" pos="0.0132864 -0.00611424 0.0145" quat="0 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.2 0.2 0.2 1" mesh="fingertip" />
                                                     <geom name="fingertip_" pos="0.0132864 -0.00611424 0.0145" quat="0 1 0 0" type="mesh" rgba="0.74902 0.74902 0.74902 1" mesh="fingertip" />
+                                                    <site name="fingertip_site" pos="0.0132864 -0.00611424 0.0145" size="0.01" rgba="1 0 0 0"/>
                                                 </body>
                                             </body>
                                         </body>
@@ -274,6 +275,7 @@
                                                     <joint name="7" pos="0 0 0" axis="0 0 -1" limited="true" range="-0.366 2.042" />
                                                     <geom name="fingertip_2" pos="0.0132864 -0.00611424 0.0145" quat="0 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.2 0.2 0.2 1" mesh="fingertip" />
                                                     <geom name="fingertip_2_" pos="0.0132864 -0.00611424 0.0145" quat="0 1 0 0" type="mesh" rgba="0.74902 0.74902 0.74902 1" mesh="fingertip" />
+                                                    <site name="fingertip_2_site" pos="0.0132864 -0.00611424 0.0145" size="0.01" rgba="1 0 0 0"/>
                                                 </body>
                                             </body>
                                         </body>
@@ -299,6 +301,7 @@
                                                     <joint name="11" pos="0 0 0" axis="0 0 -1" limited="true" range="-0.366 2.042" />
                                                     <geom name="fingertip_3" pos="0.0132864 -0.00611424 0.0145" quat="0 1 0 0" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.2 0.2 0.2 1" mesh="fingertip" />
                                                     <geom name="fingertip_3_" pos="0.0132864 -0.00611424 0.0145" quat="0 1 0 0" type="mesh" rgba="0.74902 0.74902 0.74902 1" mesh="fingertip" />
+                                                    <site name="fingertip_3_site" pos="0.0132864 -0.00611424 0.0145" size="0.01" rgba="1 0 0 0"/>
                                                 </body>
                                             </body>
                                         </body>
@@ -324,6 +327,7 @@
                                                     <joint name="15" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.34 1.88" />
                                                     <geom name="thumb_fingertip" pos="0.0625595 0.0784597 0.0489929" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.74902 0.74902 0.74902 1" mesh="thumb_fingertip" />
                                                     <geom name="thumb_fingertip_" pos="0.0625595 0.0784597 0.0489929" type="mesh" rgba="0.74902 0.74902 0.74902 1" mesh="thumb_fingertip" />
+                                                    <site name="thumb_fingertip_site" pos="0.0625595 0.0784597 0.0489929" size="0.01" rgba="1 0 0 0"/>
                                                 </body>
                                             </body>
                                         </body>
@@ -463,10 +467,24 @@
         </body>
         
         <!-- Fruit (object) - now spherical and mocap for positioning -->
+        <!-- Fruit (object) - now spherical and mocap for positioning -->
+        <!-- Modified for soft contact and high friction -->
         <body name="object" pos="0.8 1.25 1.2" mocap="true">
-            <geom name='object' type="sphere" size="0.025" rgba="1.0 0.0 0.0 1" contype="1" conaffinity="1" condim="4"/>
+            <geom name='object' type="sphere" size="0.025" rgba="0.9 0.1 0.1 1" 
+                  contype="1" conaffinity="1" condim="4"
+                  friction="1.2 0.005 0.0001"
+                  solref="0.02 1"
+                  solimp="0.9 0.95 0.001"
+                  priority="1"/> 
         </body>
     </worldbody>
+    
+    <sensor>
+        <touch name="sensor_touch_thumb" site="thumb_fingertip_site" />
+        <touch name="sensor_touch_index" site="fingertip_site" />
+        <touch name="sensor_touch_middle" site="fingertip_2_site" />
+        <touch name="sensor_touch_ring"   site="fingertip_3_site" />
+    </sensor>
     <contact>
         <pair name = "floor_wheel_1" geom1 = "floor" geom2 = "Wheel1" friction = "1.1 1.1 0.005 0.0001 0.0001"/>
         <pair name = "floor_wheel_2" geom1 = "floor" geom2 = "Wheel2" friction = "1.1 1.1 0.005 0.0001 0.0001"/>

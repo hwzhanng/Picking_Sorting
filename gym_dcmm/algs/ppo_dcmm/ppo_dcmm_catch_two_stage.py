@@ -29,8 +29,14 @@ class PPO_Catch_TwoStage(object):
         print("actions_num: ", self.actions_num)
         self.actions_low = self.env.get_attr("actions_low")[0]
         self.actions_high = self.env.get_attr("actions_high")[0]
-        self.obs_shape = (self.env.get_attr("obs_c_dim")[0],)
-        self.obs_t_shape = (self.env.get_attr("obs_t_dim")[0],) # remove the hand part
+        self.state_dim = self.env.get_attr("state_dim")[0]
+        self.img_width = self.env.get_attr("img_width")[0]
+        self.img_height = self.env.get_attr("img_height")[0]
+        self.depth_pixels = self.img_width * self.img_height
+        
+        # obs_shape is the total flattened dimension
+        self.obs_shape = (self.state_dim + self.depth_pixels,)
+        self.obs_t_shape = (self.state_dim,) 
         self.full_action_dim = self.env.get_attr("act_c_dim")[0]
         self.task = self.env.get_attr("task")[0]
         # ---- Model ----
@@ -38,16 +44,19 @@ class PPO_Catch_TwoStage(object):
             'actor_units': self.network_config.mlp.units,
             'actions_num': self.actions_num,
             'input_shape': self.obs_shape,
+            'state_dim': self.state_dim, # Pass state_dim to model for splitting
+            'depth_pixels': self.depth_pixels,
+            'img_size': self.img_width,
             'separate_value_mlp': self.network_config.get('separate_value_mlp', True),
         }
         print("net_config: ", net_config)
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
-        self.running_mean_std_track = RunningMeanStd(self.obs_t_shape).to(self.device)
-        self.running_mean_std_hand = RunningMeanStd((12,)).to(self.device)
+        self.running_mean_std = RunningMeanStd((self.state_dim,)).to(self.device)
+        # self.running_mean_std_hand = RunningMeanStd((12,)).to(self.device) # Merged into state
         self.value_mean_std = RunningMeanStd((1,)).to(self.device)
         # print("### Start loading tracking model")
-        self.load_tracking_model(full_config.checkpoint_tracking, full_config.checkpoint_catching)
+        # self.load_tracking_model(full_config.checkpoint_tracking, full_config.checkpoint_catching)
         # print("### Done loading tracking model")
         # ---- Output Dir ----
         # allows us to specify a folder where all experiments will reside
@@ -138,19 +147,22 @@ class PPO_Catch_TwoStage(object):
         actor_path: Path to save actor model parameters.
         """
         print("### Start loading tracking model")
-        if checkpoint_tracking and not checkpoint_catching:
-            self.model.actor_mlp_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mlp'])
-            self.model.mu_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mu'])
-            self.model.sigma_t.data.copy_(torch.load(checkpoint_tracking, map_location=self.device)['tracking_sigma'])
-            print("self.model.sigma_t.data: ", self.model.sigma_t.data)
-            self.running_mean_std_track.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['running_mean_std'])
+        # NOTE: Tracking model loading is disabled because state dimension changed.
+        # User needs to retrain or update this logic if compatibility is required.
+        pass
+        # if checkpoint_tracking and not checkpoint_catching:
+        #     self.model.actor_mlp_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mlp'])
+        #     self.model.mu_t.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['tracking_mu'])
+        #     self.model.sigma_t.data.copy_(torch.load(checkpoint_tracking, map_location=self.device)['tracking_sigma'])
+        #     print("self.model.sigma_t.data: ", self.model.sigma_t.data)
+        #     self.running_mean_std_track.load_state_dict(torch.load(checkpoint_tracking, map_location=self.device)['running_mean_std'])
         
-        # Freeze the tracking model
-        for param in self.model.actor_mlp_t.parameters():
-            param.requires_grad = False
-        for param in self.model.mu_t.parameters():
-            param.requires_grad = False
-        self.model.sigma_t.requires_grad = False
+        # # Freeze the tracking model
+        # for param in self.model.actor_mlp_t.parameters():
+        #     param.requires_grad = False
+        # for param in self.model.mu_t.parameters():
+        #     param.requires_grad = False
+        # self.model.sigma_t.requires_grad = False
         
         print("### Done loading tracking model")
 
@@ -179,16 +191,14 @@ class PPO_Catch_TwoStage(object):
     def set_eval(self):
         self.model.eval()
         if self.normalize_input:
-            self.running_mean_std_track.eval()
-            self.running_mean_std_hand.eval()
+            self.running_mean_std.eval()
         if self.normalize_value:
             self.value_mean_std.eval()
 
     def set_train(self):
         self.model.train()
         if self.normalize_input:
-            self.running_mean_std_track.train()
-            self.running_mean_std_hand.train()
+            self.running_mean_std.train()
         if self.normalize_value:
             self.value_mean_std.train()
 
@@ -263,10 +273,8 @@ class PPO_Catch_TwoStage(object):
         weights = {
             'model': self.model.state_dict(),
         }
-        if self.running_mean_std_track:
-            weights['running_mean_std_track'] = self.running_mean_std_track.state_dict()
-        if self.running_mean_std_hand:
-            weights['running_mean_std_hand'] = self.running_mean_std_hand.state_dict()
+        if self.running_mean_std:
+            weights['running_mean_std'] = self.running_mean_std.state_dict()
         if self.value_mean_std:
             weights['value_mean_std'] = self.value_mean_std.state_dict()
         torch.save(weights, f'{name}.pth')
@@ -276,14 +284,12 @@ class PPO_Catch_TwoStage(object):
             return
         checkpoint = torch.load(fn, map_location = self.device)
         self.model.load_state_dict(checkpoint['model'])
-        self.running_mean_std_track.load_state_dict(checkpoint['running_mean_std_track'])
-        self.running_mean_std_hand.load_state_dict(checkpoint['running_mean_std_hand'])
+        self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
     
     def restore_test(self, fn):
         checkpoint = torch.load(fn, map_location = self.device)
         if self.normalize_input:
-            self.running_mean_std_track.load_state_dict(checkpoint['running_mean_std_track'])
-            self.running_mean_std_hand.load_state_dict(checkpoint['running_mean_std_hand'])
+            self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
         if not fn:
             return
         self.model.load_state_dict(checkpoint['model'])
@@ -305,14 +311,19 @@ class PPO_Catch_TwoStage(object):
                 value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
                     returns, actions, obs = self.storage[i]
 
-                obs_track = self.running_mean_std_track(obs[:,:-12])
-                obs_hand = self.running_mean_std_hand(obs[:,-12:])
-                obs = torch.cat((obs_track, obs_hand), dim=1)
+                # Split obs into state and depth
+                state = obs[:, :self.state_dim]
+                depth = obs[:, self.state_dim:]
+                
+                # Normalize state
+                state = self.running_mean_std(state)
+                
+                # Re-concatenate
+                obs_processed = torch.cat((state, depth), dim=1)
+                
                 batch_dict = {
                     'prev_actions': actions,
-                    'obs': obs,
-                    'obs_t': obs[:,:-12],
-                    'obs_c': obs[:,2:],
+                    'obs': obs_processed,
                 }
                 res_dict = self.model(batch_dict)
                 action_log_probs = res_dict['prev_neglogp']
@@ -384,24 +395,20 @@ class PPO_Catch_TwoStage(object):
         return a_losses, c_losses, b_losses, entropies, kls
     
     def obs2tensor(self, obs, task=''):
-        if task == '':
-            task = self.task
-        # Map the step result to tensor
-        if task == 'Catching':
-            obs_array = np.concatenate((
-                        obs["base"]["v_lin_2d"], 
-                        obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], 
-                        obs["arm"]["ee_v_lin_3d"],
-                        obs["object"]["pos3d"], obs["object"]["v_lin_3d"], 
-                        obs["hand"],
-                        ), axis=1)
-        else:
-            obs_array = np.concatenate((
-                    obs["base"]["v_lin_2d"], 
-                    obs["arm"]["ee_pos3d"], obs["arm"]["ee_quat"], 
-                    obs["arm"]["ee_v_lin_3d"], 
-                    obs["object"]["pos3d"], obs["object"]["v_lin_3d"]
-                    ), axis=1)
+        # Flatten dictionary to single tensor
+        # obs is a dict of arrays (from vectorized env)
+        # obs['state']: (num_envs, state_dim)
+        # obs['depth']: (num_envs, 1, H, W)
+        
+        state = obs['state']
+        depth = obs['depth']
+        
+        # Flatten depth: (num_envs, H*W)
+        depth_flat = depth.reshape(depth.shape[0], -1)
+        
+        # Concatenate
+        obs_array = np.concatenate((state, depth_flat), axis=1)
+        
         obs_tensor = torch.tensor(obs_array, dtype=torch.float32).to(self.device)
         return obs_tensor
 
@@ -424,13 +431,19 @@ class PPO_Catch_TwoStage(object):
         return actions_dict
 
     def model_act(self, obs_dict, inference=False):
-        processed_obs_track = self.running_mean_std_track(obs_dict['obs'][:, :-12])
-        processed_obs_hand = self.running_mean_std_hand(obs_dict['obs'][:, -12:])
-        processed_obs = torch.cat((processed_obs_track, processed_obs_hand), dim=1)
+        # Split obs into state and depth
+        obs = obs_dict['obs']
+        state = obs[:, :self.state_dim]
+        depth = obs[:, self.state_dim:]
+        
+        # Normalize state
+        state_processed = self.running_mean_std(state)
+        
+        # Re-concatenate
+        obs_processed = torch.cat((state_processed, depth), dim=1)
+        
         input_dict = {
-            'obs': processed_obs,
-            'obs_t': processed_obs[:,:-12],
-            'obs_c': processed_obs[:,2:],
+            'obs': obs_processed,
         }
         if not inference:
             res_dict = self.model.act(input_dict)

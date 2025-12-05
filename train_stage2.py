@@ -37,6 +37,10 @@ def main(config: DictConfig):
     env_name = 'gym_dcmm/DcmmVecWorldCatch-v0'
     task = 'Catching'
     
+    if config.viewer or config.imshow_cam:
+        cprint("Visualization enabled (viewer/imshow_cam). Forcing num_envs = 1 to prevent crash.", 'yellow')
+        config.num_envs = 1
+
     if config.num_envs > 18:
         cprint(f"Warning: config.num_envs {config.num_envs} is too large for the available CPU cores. Capping at 18.", 'yellow')
         config.num_envs = 18
