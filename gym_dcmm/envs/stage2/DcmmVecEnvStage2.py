@@ -348,46 +348,45 @@ class DcmmVecEnvStage2(gym.Env):
         self.Dcmm.data_arm.qpos[0:6] = DcmmCfg.arm_joints[:]
         self.Dcmm.data.body("object").xpos[0:3] = np.array([2, 2, 1])
 
-        # Stage 2 Initialization: Hand 5cm-20cm from fruit
-        # 1. Get object position (randomized later, but we need a target)
-        # For now, let's assume object is at a random position in front
-        obj_pos = np.array([0.8 + np.random.uniform(-0.1, 0.1), 
-                            1.25 + np.random.uniform(-0.1, 0.1), 
-                            1.2 + np.random.uniform(-0.1, 0.1)])
+
+        # Stage 2 Initialization: Include UNREACHABLE samples
+        # Generate objects in range [0.05m, 2.0m] from end-effector
+        # This creates many "impossible" scenarios to teach the agent:
+        # - When fruit is too far (> 0.20m = unreachable by hand)
+        # - Different difficulty levels for curriculum learning
+        # - Realistic distribution matching Stage 1 training
         
-        # 2. Sample a point on a sphere shell around object (r in [0.05, 0.20])
-        r = np.random.uniform(0.05, 0.20)
-        theta = np.random.uniform(0, np.pi) # Polar angle
-        phi = np.random.uniform(0, 2*np.pi) # Azimuthal angle
+        # Get EE position from forward kinematics
+        mujoco.mj_forward(self.Dcmm.model, self.Dcmm.data)
+        ee_pos = self.Dcmm.data.body("link6").xpos
+        
+        # Sample distance r in [0.05m, 2.0m] (matching Stage 1 max range)
+        # 0.05m - 0.20m: Reachable samples (~7.5% of volume)
+        # 0.20m - 2.0m: Unreachable samples (~92.5% of volume)
+        r = np.random.uniform(0.05, 2.0)
+        
+        # Sample random direction on sphere
+        theta = np.random.uniform(0, np.pi)      # Polar angle
+        phi = np.random.uniform(0, 2*np.pi)      # Azimuthal angle
         
         dx = r * np.sin(theta) * np.cos(phi)
         dy = r * np.sin(theta) * np.sin(phi)
         dz = r * np.cos(theta)
         
-        # Hand target position
-        hand_pos = obj_pos + np.array([dx, dy, dz])
-        
-        # Note: We can't easily set IK here without a solver. 
-        # Instead, we rely on the "semi-raised" arm_joints config to be roughly in the workspace,
-        # and maybe we can just set the object relative to the hand?
-        # User said: "生成的灵巧手在距离上需要距离果实20cm以内，5厘米以外"
-        # Easier approach: Spawn object relative to the End Effector's initial position!
-        
-        # Get EE position from forward kinematics of the semi-raised arm
-        mujoco.mj_forward(self.Dcmm.model, self.Dcmm.data)
-        ee_pos = self.Dcmm.data.body("link6").xpos
-        
         # Set object position relative to EE
         self.object_pos3d = ee_pos + np.array([dx, dy, dz])
         
-        # Ensure object is above ground
+        # Ensure object is above ground (minimum height 0.1m)
         self.object_pos3d[2] = max(self.object_pos3d[2], 0.1)
+        
+        # Set object mocap position
         object_body_id = mujoco.mj_name2id(self.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, "object")
         if object_body_id != -1:
             object_mocap_id = self.Dcmm.model.body_mocapid[object_body_id]
             if object_mocap_id != -1:
                 self.Dcmm.data.mocap_pos[object_mocap_id] = self.object_pos3d
                 self.Dcmm.data.mocap_quat[object_mocap_id] = self.object_q
+
 
         # Random Gravity
         self.Dcmm.model.opt.gravity[2] = -9.81 + 0.5*np.random.uniform(-1, 1)
