@@ -129,9 +129,14 @@ class ObservationManager:
             # Clip to be non-negative
             imgs = np.clip(imgs, 0, None)
             
-            obs["depth"] = imgs.astype(np.float32)
+            # Normalize to 0-255 uint8 (Max depth 3.0m)
+            max_depth = 3.0
+            imgs = np.clip(imgs / max_depth, 0, 1)
+            imgs = (imgs * 255).astype(np.uint8)
+            
+            obs["depth"] = imgs
         else:
-            obs["depth"] = np.zeros((1, self.env.img_size[0], self.env.img_size[1]), dtype=np.float32)
+            obs["depth"] = np.zeros((1, self.env.img_size[0], self.env.img_size[1]), dtype=np.uint8)
 
         if self.env.print_obs:
             print(f"##### Observation #####")

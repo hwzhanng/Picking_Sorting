@@ -1,0 +1,75 @@
+name: dcmm
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  # Python
+  - python=3.8.20
+  
+  # Core System Libraries
+  - numpy=1.23.0
+  - pytorch=2.4.1
+  - torchvision=0.20.0
+  - torchaudio=2.4.1
+  - pytorch-cuda=12.1
+  - cudatoolkit
+  
+  # CUDA Libraries
+  - cuda-cudart=12.1.105
+  - cuda-runtime=12.1.0
+  - cuda-libraries=12.1.0
+  - cuda-nvrtc=12.1.105
+  - cuda-nvtx=12.1.105
+  - cuda-cupti=12.1.105
+  
+  # Scientific Computing
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  
+  # Build Tools
+  - pip
+  - setuptools
+  - wheel
+  
+  # Pip dependencies
+  - pip:
+    # Gym & RL
+    - gymnasium==0.29.1
+    - mujoco==3.2.3
+    - stable-baselines3==2.4.1
+    
+    # Numerical & Math
+    - numpy-quaternion==2023.0.4
+    - spatialmath-python==1.1.15
+    - qpsolvers==4.8.1
+    - quadprog==0.1.12
+    
+    # Computer Vision
+    - opencv-python==4.12.0.88
+    - imageio==2.35.1
+    
+    # Visualization
+    - PyOpenGL==3.1.10
+    - glfw==2.10.0
+    
+    # Configuration
+    - PyYAML==6.0
+    - omegaconf==2.3.0
+    - hydra-core==1.3.2
+    
+    # Logging & Monitoring
+    - wandb==0.22.3
+    - tensorboard==2.14.0
+    - tensorboardX==2.6.2.2
+    
+    # Utilities
+    - termcolor==2.4.0
+    - colored==1.4.4
+    - decorators==2.0.7
+    - ansitable==0.11.4
+    
+    # Local package (install in editable mode: pip install -e .)
+    # - -e .

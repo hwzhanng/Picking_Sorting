@@ -168,7 +168,7 @@ class DcmmVecEnvStage1(gym.Env):
                 "object": spaces.Dict({
                     "pos3d": spaces.Box(-10, 10, shape=(3,), dtype=np.float32),
                 }),
-                "depth": spaces.Box(low=0, high=1.0, shape=(1, self.img_size[0], self.img_size[1]), dtype=np.float32),
+                "depth": spaces.Box(low=0, high=255, shape=(1, self.img_size[0], self.img_size[1]), dtype=np.uint8),
             }
         )
 

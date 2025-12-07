@@ -229,6 +229,8 @@ class RewardManagerStage1:
             with torch.no_grad():
                 res = self.grasp_critic.act(input_dict)
                 value_est = res['values'].item()
+                if self.env.print_reward:
+                    print(f">>> AVP Raw Value: {value_est:.4f}")
             
             # Scale the value to reasonable reward range
             avp_reward = self.avp_lambda * value_est
