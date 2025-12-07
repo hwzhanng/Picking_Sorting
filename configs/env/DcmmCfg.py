@@ -168,3 +168,26 @@ class curriculum:
     # Orientation strictness changes (power)
     orient_power_start = 1.0
     orient_power_end = 4.0
+
+## AVP (Asymmetric Value Propagation) Configuration
+## Toggle for ablation studies
+class avp:
+    # Master switch - set False for baseline experiments
+    enabled = True
+    
+    # Reward weight range (decays with curriculum)
+    lambda_weight_start = 0.8   # Early training: strong AVP guidance
+    lambda_weight_end = 0.2     # Late training: rely more on original rewards
+    
+    # Distance gate - only compute AVP when EE is closer than this (meters)
+    gate_distance = 1.5
+    
+    # Checkpoint path for Stage 2 Critic (relative to project root)
+    checkpoint_path = "assets/checkpoints/avp/stage2_critic.pth"
+    
+    # Virtual observation configuration (pre-grasp posture)
+    ready_pose = np.array([0.0, -0.5, 0.0, 1.5, 0.0, 0.0])
+    
+    # Network dimensions (must match Stage 2 training)
+    state_dim = 35
+    img_size = 84

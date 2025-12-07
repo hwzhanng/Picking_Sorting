@@ -23,6 +23,9 @@ checkpoint_catching: ''
 # checkpoint_tracking: 'assets/models/track.pth'
 # checkpoint_catching: 'assets/models/catch_two_stage.pth'
 
+# AVP (Asymmetric Value Propagation) toggle
+avp_enabled: True  # Set False for ablation baseline
+
 # wandb config
 output_name: Dcmm
 wandb_mode: "disabled"  # "online" | "offline" | "disabled"

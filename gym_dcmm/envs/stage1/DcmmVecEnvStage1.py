@@ -448,6 +448,18 @@ class DcmmVecEnvStage1(gym.Env):
     def set_global_step(self, step):
         """Set the global training step for curriculum learning."""
         self.global_step = step
+    
+    @property
+    def curriculum_difficulty(self):
+        """Get current curriculum difficulty (0.0 to 1.0) for AVP lambda decay."""
+        max_steps = DcmmCfg.curriculum.stage2_steps
+        return min(max(self.global_step / max_steps, 0.0), 1.0)
+    
+    def get_avp_stats(self):
+        """Get AVP statistics for WandB logging (called via env_method from PPO)."""
+        if hasattr(self, 'reward_manager') and hasattr(self.reward_manager, 'get_avp_stats_and_reset'):
+            return self.reward_manager.get_avp_stats_and_reset()
+        return None
 
     def step(self, action):
         """

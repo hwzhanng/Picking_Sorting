@@ -49,6 +49,13 @@ def main(config: DictConfig):
         config.num_envs = 18
         
     print("config.num_envs: ", config.num_envs)
+    
+    # Apply AVP config from command line
+    import configs.env.DcmmCfg as DcmmCfg
+    if hasattr(config, 'avp_enabled'):
+        DcmmCfg.avp.enabled = config.avp_enabled
+        cprint(f"AVP enabled: {DcmmCfg.avp.enabled}", 'cyan')
+    
     env = gym.make_vec(env_name, num_envs=int(config.num_envs), 
                     task=task, camera_name=["top"],  # Use vehicle top camera
                     render_per_step=False, render_mode = "depth_array", # Use depth mode

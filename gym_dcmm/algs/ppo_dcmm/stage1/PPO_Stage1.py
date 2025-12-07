@@ -257,6 +257,20 @@ class PPO_Stage1(object):
                 'metrics/episode_lengths_per_step': mean_lengths,
                 'metrics/episode_success_per_step': mean_success,
             }, step=self.agent_steps)
+            
+            # Log AVP statistics (if enabled)
+            if hasattr(self.env, 'env_method'):
+                # VecEnv wrapper - get from first environment
+                try:
+                    avp_stats = self.env.env_method("get_avp_stats")[0]
+                    if avp_stats:
+                        wandb.log(avp_stats, step=self.agent_steps)
+                        print(f"  AVP: λ={avp_stats.get('avp/lambda', 0):.3f}, "
+                              f"value={avp_stats.get('avp/critic_value_mean', 0):.3f}, "
+                              f"gate_ratio={avp_stats.get('avp/gate_ratio', 0):.1%}")
+                except:
+                    pass  # AVP not available
+            
             checkpoint_name = f'ep_{self.epoch_num}_step_{int(self.agent_steps // 1e6):04}m_reward_{mean_rewards:.2f}'
 
             if self.save_freq > 0:
