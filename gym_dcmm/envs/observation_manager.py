@@ -115,26 +115,16 @@ class ObservationManager:
         }
 
         # Add depth image if render mode is set
+        # Use RenderManager.get_depth_obs() for consistent noise processing across stages
         if self.env.render_mode is not None:
-            imgs = self.env.render()
-            
-            # Add Gaussian Noise
-            noise = np.random.normal(0, 0.05, imgs.shape)
-            imgs = imgs + noise
-            
-            # Add Random Holes (Dropout 5-10%)
-            mask = np.random.rand(*imgs.shape) > np.random.uniform(0.05, 0.10)
-            imgs = imgs * mask
-            
-            # Clip to be non-negative
-            imgs = np.clip(imgs, 0, None)
-            
-            # Normalize to 0-255 uint8 (Max depth 3.0m)
-            max_depth = 3.0
-            imgs = np.clip(imgs / max_depth, 0, 1)
-            imgs = (imgs * 255).astype(np.uint8)
-            
-            obs["depth"] = imgs
+            # Get depth with full noise augmentation (Cutout, Salt-Pepper, Edge Blur, Depth-Dependent)
+            obs["depth"] = self.env.render_manager.get_depth_obs(
+                width=self.env.img_size[1],  # Note: img_size is (height, width)
+                height=self.env.img_size[0],
+                camera_name=self.env.camera_name[0] if self.env.camera_name else "wrist",
+                add_noise=True,
+                add_holes=True
+            )
         else:
             obs["depth"] = np.zeros((1, self.env.img_size[0], self.env.img_size[1]), dtype=np.uint8)
 

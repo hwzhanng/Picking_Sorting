@@ -30,19 +30,38 @@ pip install -e .
 
 ## 🎯 训练指南
 
-### Stage 1: 追踪任务 (Tracking)
+> ⚠️ **重要**: 正确的训练顺序是 **先训练 Stage 2，再训练 Stage 1**。Stage 1 会加载预训练的 Stage 2 Critic 进行 AVP 奖励计算。
 
-训练底盘和机械臂接近目标果实，同时避开植株障碍。
+### Step 1: Stage 2 训练 (灵巧手抓取)
+
+**独立训练**灵巧手在近距离完成抓取任务。训练完成后导出 Critic 用于 AVP。
 
 ```bash
-# 基础训练 (AVP 默认开启)
+# 基础训练 (Stage 2 独立训练，无需加载 Stage 1)
+python train_stage2.py
+
+# 调整并行环境数 (根据GPU显存)
+python train_stage2.py num_envs=16
+
+# 从检查点恢复
+python train_stage2.py checkpoint_catching="outputs/Dcmm_Catch/xxx/nn/best_reward_XXX.pth"
+```
+
+**训练完成后**，复制最佳模型到 AVP 目录：
+```bash
+cp outputs/Dcmm_Catch/.../best_reward_XXX.pth assets/checkpoints/avp/stage2_critic.pth
+```
+
+### Step 2: Stage 1 训练 (底盘+机械臂接近)
+
+使用预训练的 **Stage 2 Critic** (通过 AVP) 引导底盘和机械臂找到便于抓取的位置。
+
+```bash
+# 基础训练 (AVP 自动加载 Stage 2 Critic)
 python train_stage1.py
 
 # 关闭 AVP (消融实验基线)
 python train_stage1.py avp_enabled=False
-
-# 调整并行环境数 (根据GPU显存调整，推荐16-32)
-python train_stage1.py num_envs=16
 
 # 从检查点恢复训练
 python train_stage1.py checkpoint_tracking="outputs/Dcmm/xxx/nn/best_reward_XXX.pth"
@@ -51,30 +70,49 @@ python train_stage1.py checkpoint_tracking="outputs/Dcmm/xxx/nn/best_reward_XXX.
 **关键参数** (`configs/config_stage1.yaml`):
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `num_envs` | 8 | 并行环境数（增大可提高吞吐量，但增加显存占用） |
-| `train.ppo.horizon_length` | 512 | 每次收集的步数（减小可加速更新频率） |
-| `train.ppo.learning_rate` | 3e-4 | 学习率 |
+| `num_envs` | 8 | 并行环境数 |
 | `train.ppo.max_agent_steps` | 25M | 最大训练步数 |
+| `avp_enabled` | True | AVP 开关 |
 
 ---
 
-### Stage 2: 抓取任务 (Catching)
-
-使用预训练的 Stage 1 模型（冻结），训练灵巧手进行抓取。
-
-```bash
-# 基础训练（必须指定 Stage 1 检查点）
-python train_stage2.py checkpoint_tracking="outputs/Dcmm/.../best_reward_XXX.pth"
-
-# 调整并行环境数
-python train_stage2.py num_envs=16 checkpoint_tracking="..."
-```
+### Stage 2 关键参数
 
 **关键参数** (`configs/config_stage2.yaml`):
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `num_envs` | 8 | 并行环境数 |
-| `checkpoint_tracking` | 无 | **必填** Stage 1 模型路径 |
+| `seed` | -1 | 随机种子 (-1=自动随机) |
+| `wandb_mode` | online | WandB 模式 |
+
+### 🔄 多次实验 (不同随机种子)
+
+```bash
+# 使用不同种子启动多次 Stage 2 训练
+python train_stage2.py seed=42 output_name=Dcmm_Catch_seed42
+python train_stage2.py seed=123 output_name=Dcmm_Catch_seed123
+python train_stage2.py seed=456 output_name=Dcmm_Catch_seed456
+
+# 或使用 bash 循环批量启动
+for seed in 42 123 456 789 1000; do
+    python train_stage2.py seed=$seed output_name=Dcmm_Catch_seed$seed &
+done
+```
+
+### 📊 WandB 日志配置
+
+WandB 默认启用。可通过命令行控制：
+
+```bash
+# 禁用 WandB (本地测试)
+python train_stage2.py wandb_mode=disabled
+
+# 离线模式 (稍后同步)
+python train_stage2.py wandb_mode=offline
+
+# 在线模式 (默认) - 设置项目名
+python train_stage2.py wandb_project=MyProject output_name=Exp1
+```
 
 ---
 

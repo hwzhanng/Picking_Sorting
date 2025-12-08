@@ -135,14 +135,14 @@ class RenderManager:
 
     def get_depth_obs(self, width=84, height=84, camera_name="top", add_noise=True, add_holes=True):
         """
-        Get depth observation from a specific camera.
+        Get depth observation from a specific camera with realistic noise.
         
         Args:
             width (int): Target width
             height (int): Target height
             camera_name (str): Name of the camera to render
-            add_noise (bool): Whether to add Gaussian noise
-            add_holes (bool): Whether to add random holes (dropout)
+            add_noise (bool): Whether to add realistic depth noise
+            add_holes (bool): Whether to add random holes (dropout/cutout)
             
         Returns:
             np.ndarray: Depth image (1, height, width) in uint8 (0-255)
@@ -165,25 +165,154 @@ class RenderManager:
         # Resize
         depth_resized = cv.resize(depth_meters, (width, height), interpolation=cv.INTER_AREA)
         
+        # Maximum depth for normalization
+        max_depth = 3.0
+        
         if add_noise:
-            # Add Gaussian Noise
-            noise = np.random.normal(0, 0.05, depth_resized.shape)
-            depth_resized = depth_resized + noise
+            # 1. Depth-Dependent Gaussian Noise (far objects have more noise)
+            depth_resized = self._add_depth_dependent_noise(depth_resized, max_depth)
+            
+            # 2. Salt-and-Pepper Noise (specular reflections, sensor saturation)
+            depth_resized = self._add_salt_pepper_noise(depth_resized, max_depth)
+            
+            # 3. Edge Blur (depth discontinuity artifacts)
+            depth_resized = self._add_edge_blur(depth_resized)
             
         if add_holes:
-            # Add Random Holes (Dropout 5-10%)
-            mask = np.random.rand(*depth_resized.shape) > np.random.uniform(0.05, 0.10)
+            # 4. Cutout Noise (large block dropouts - realistic depth camera holes)
+            depth_resized = self._add_cutout_noise(depth_resized)
+            
+            # 5. Random Pixel Dropout (legacy: 5-10% scattered dropout)
+            dropout_rate = np.random.uniform(0.05, 0.10)
+            mask = np.random.rand(*depth_resized.shape) > dropout_rate
             depth_resized = depth_resized * mask
             
         # Clip to be non-negative
         depth_resized = np.clip(depth_resized, 0, None)
         
         # Normalize to 0-255 uint8
-        # We need a max depth to normalize against. 
-        # Assuming max relevant depth is around 3.0 meters (arm workspace).
-        max_depth = 3.0
         depth_norm = np.clip(depth_resized / max_depth, 0, 1)
         depth_uint8 = (depth_norm * 255).astype(np.uint8)
         
         # Add channel dimension (1, H, W)
         return np.expand_dims(depth_uint8, axis=0)
+
+    def _add_cutout_noise(self, depth_img, num_cutouts_range=(1, 3), size_ratio_range=(0.05, 0.15)):
+        """
+        Add rectangular cutout noise to simulate large depth camera holes.
+        
+        Real depth cameras often have large contiguous regions of missing data
+        due to occlusion, reflective surfaces, or sensor limitations.
+        
+        Args:
+            depth_img: Depth image in meters
+            num_cutouts_range: Range for number of cutout blocks
+            size_ratio_range: Range for cutout size as ratio of image dimensions
+        
+        Returns:
+            np.ndarray: Depth image with cutout holes
+        """
+        h, w = depth_img.shape
+        num_cutouts = np.random.randint(num_cutouts_range[0], num_cutouts_range[1] + 1)
+        
+        for _ in range(num_cutouts):
+            # Random size for this cutout
+            size_ratio = np.random.uniform(size_ratio_range[0], size_ratio_range[1])
+            ch = max(1, int(h * size_ratio))
+            cw = max(1, int(w * size_ratio))
+            
+            # Random position
+            y = np.random.randint(0, max(1, h - ch))
+            x = np.random.randint(0, max(1, w - cw))
+            
+            # Apply cutout (set to 0 = black hole)
+            depth_img[y:y+ch, x:x+cw] = 0
+            
+        return depth_img
+
+    def _add_salt_pepper_noise(self, depth_img, max_depth, 
+                                salt_ratio_range=(0.01, 0.03), 
+                                pepper_ratio_range=(0.02, 0.05)):
+        """
+        Add salt-and-pepper noise to simulate specular reflections and sensor saturation.
+        
+        - Salt (white): Far plane / max values - simulates specular reflections
+        - Pepper (black): Near plane / 0 values - simulates sensor blind spots
+        
+        Args:
+            depth_img: Depth image in meters
+            max_depth: Maximum depth value for salt noise
+            salt_ratio_range: Range of pixels affected by salt noise
+            pepper_ratio_range: Range of pixels affected by pepper noise
+        
+        Returns:
+            np.ndarray: Depth image with salt-pepper noise
+        """
+        # Salt (far plane values)
+        salt_ratio = np.random.uniform(salt_ratio_range[0], salt_ratio_range[1])
+        salt_mask = np.random.rand(*depth_img.shape) < salt_ratio
+        depth_img[salt_mask] = max_depth
+        
+        # Pepper (near plane / 0)
+        pepper_ratio = np.random.uniform(pepper_ratio_range[0], pepper_ratio_range[1])
+        pepper_mask = np.random.rand(*depth_img.shape) < pepper_ratio
+        depth_img[pepper_mask] = 0
+        
+        return depth_img
+
+    def _add_edge_blur(self, depth_img, edge_noise_std=0.1):
+        """
+        Add noise specifically at depth edges to simulate depth camera edge artifacts.
+        
+        Real depth cameras often have significant errors at depth discontinuities
+        (flying pixels, mixed pixels).
+        
+        Args:
+            depth_img: Depth image in meters
+            edge_noise_std: Standard deviation of noise added to edge pixels
+        
+        Returns:
+            np.ndarray: Depth image with edge noise
+        """
+        # Detect edges using Sobel gradient magnitude
+        sobel_x = cv.Sobel(depth_img.astype(np.float32), cv.CV_32F, 1, 0, ksize=3)
+        sobel_y = cv.Sobel(depth_img.astype(np.float32), cv.CV_32F, 0, 1, ksize=3)
+        gradient_mag = np.sqrt(sobel_x**2 + sobel_y**2)
+        
+        # Normalize gradient and threshold to find edges
+        gradient_norm = gradient_mag / (gradient_mag.max() + 1e-6)
+        edge_mask = gradient_norm > 0.1  # Threshold for edge detection
+        
+        # Add noise only to edge pixels
+        noise = np.random.normal(0, edge_noise_std, depth_img.shape)
+        depth_img = depth_img + edge_mask * noise
+        
+        return depth_img
+
+    def _add_depth_dependent_noise(self, depth_img, max_depth, base_std=0.01, scale_factor=0.03):
+        """
+        Add Gaussian noise that increases with depth.
+        
+        Real depth cameras have noise that scales with distance:
+        - Near objects: low noise
+        - Far objects: high noise
+        
+        Args:
+            depth_img: Depth image in meters
+            max_depth: Maximum depth for scaling
+            base_std: Base noise standard deviation (for near objects)
+            scale_factor: Additional noise scaling with depth
+        
+        Returns:
+            np.ndarray: Depth image with depth-dependent Gaussian noise
+        """
+        # Noise std increases linearly with depth
+        depth_ratio = np.clip(depth_img / max_depth, 0, 1)
+        noise_std = base_std + scale_factor * depth_ratio
+        
+        # Generate and apply noise
+        noise = np.random.randn(*depth_img.shape) * noise_std
+        depth_img = depth_img + noise
+        
+        return depth_img
+

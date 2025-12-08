@@ -402,6 +402,19 @@ class RewardManagerStage1:
                   reward_touch + reward_regularization + reward_collision +
                   reward_plant_collision + reward_action_rate + reward_avp)
 
+        # Track reward components for WandB logging
+        if not hasattr(self, 'reward_stats'):
+            self._init_reward_stats()
+        self.reward_stats['reaching_sum'] += reward_reaching
+        self.reward_stats['base_approach_sum'] += reward_base_approach
+        self.reward_stats['orientation_sum'] += reward_orientation
+        self.reward_stats['touch_sum'] += reward_touch
+        self.reward_stats['collision_sum'] += reward_collision
+        self.reward_stats['plant_collision_sum'] += reward_plant_collision
+        self.reward_stats['ee_distance_sum'] += info["ee_distance"]
+        self.reward_stats['base_distance_sum'] += info["base_distance"]
+        self.reward_stats['count'] += 1
+
         if self.env.print_reward:
             print(f"reward_reaching: {reward_reaching:.3f}")
             print(f"reward_base_approach: {reward_base_approach:.3f}")
@@ -415,4 +428,48 @@ class RewardManagerStage1:
             print(f"total reward: {rewards:.3f}\n")
 
         return rewards
+
+    def _init_reward_stats(self):
+        """Initialize reward statistics for WandB logging."""
+        self.reward_stats = {
+            'reaching_sum': 0.0,
+            'base_approach_sum': 0.0,
+            'orientation_sum': 0.0,
+            'touch_sum': 0.0,
+            'collision_sum': 0.0,
+            'plant_collision_sum': 0.0,
+            'ee_distance_sum': 0.0,
+            'base_distance_sum': 0.0,
+            'count': 0,
+        }
+    
+    def get_reward_stats_and_reset(self):
+        """
+        Get reward statistics for WandB logging and reset counters.
+        
+        Returns:
+            dict: Reward component averages
+        """
+        if not hasattr(self, 'reward_stats') or self.reward_stats['count'] == 0:
+            return None
+        
+        count = self.reward_stats['count']
+        stats = {
+            'rewards/reaching_mean': self.reward_stats['reaching_sum'] / count,
+            'rewards/base_approach_mean': self.reward_stats['base_approach_sum'] / count,
+            'rewards/orientation_mean': self.reward_stats['orientation_sum'] / count,
+            'rewards/touch_mean': self.reward_stats['touch_sum'] / count,
+            'rewards/collision_mean': self.reward_stats['collision_sum'] / count,
+            'rewards/plant_collision_mean': self.reward_stats['plant_collision_sum'] / count,
+            'distance/ee_distance_mean': self.reward_stats['ee_distance_sum'] / count,
+            'distance/base_distance_mean': self.reward_stats['base_distance_sum'] / count,
+            'curriculum/difficulty': self.env.curriculum_difficulty,
+            'curriculum/w_stem': self.env.current_w_stem,
+            'curriculum/orient_power': self.env.current_orient_power,
+        }
+        
+        # Reset counters
+        self._init_reward_stats()
+        
+        return stats
 

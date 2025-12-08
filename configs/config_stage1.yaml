@@ -28,7 +28,7 @@ avp_enabled: True  # Set False for ablation baseline
 
 # wandb config
 output_name: Dcmm
-wandb_mode: "disabled"  # "online" | "offline" | "disabled"
+wandb_mode: "online"  # "online" | "offline" | "disabled"
 wandb_entity: null
 wandb_project: 'RL_Dcmm_Track_Random'
 # wandb_project: 'RL_Dcmm_Catch_Random'

@@ -258,7 +258,7 @@ class PPO_Stage1(object):
                 'metrics/episode_success_per_step': mean_success,
             }, step=self.agent_steps)
             
-            # Log AVP statistics (if enabled)
+            # Log AVP and Reward decomposition statistics (if enabled)
             if hasattr(self.env, 'env_method'):
                 # VecEnv wrapper - get from first environment
                 try:
@@ -270,6 +270,14 @@ class PPO_Stage1(object):
                               f"gate_ratio={avp_stats.get('avp/gate_ratio', 0):.1%}")
                 except:
                     pass  # AVP not available
+                
+                try:
+                    reward_stats = self.env.env_method("get_reward_stats")[0]
+                    if reward_stats:
+                        wandb.log(reward_stats, step=self.agent_steps)
+                except:
+                    pass  # Reward stats not available
+
             
             checkpoint_name = f'ep_{self.epoch_num}_step_{int(self.agent_steps // 1e6):04}m_reward_{mean_rewards:.2f}'
 

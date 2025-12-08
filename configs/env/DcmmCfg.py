@@ -18,9 +18,9 @@ WEIGHT_PATH = os.path.join(ASSET_PATH, "weights")
 distance_thresh = 0.25
 
 ## Define the initial joint positions of the arm and the hand
-# Semi-raised state for Stage 2
+# Pre-grasp pose for maximum flexibility (Stage 2 optimized)
 arm_joints = np.array([
-   0.0, -0.5, -0.0, 1.5, 0.0, 0.0 
+   0.0, 0.0, 0.0, 0.8, 0.0, 0.0 
 ])
 
 hand_joints = np.array([
@@ -159,15 +159,23 @@ hand_mask = np.array([1, 0, 1, 1,
 class curriculum:
     # Define stage switching thresholds (steps)
     stage1_steps = 2e6  # First 2M steps
-    stage2_steps = 6e6  # Up to 6M steps
+    stage2_steps = 10e6  # Extended curriculum period
     
-    # Stem collision penalty changes
-    collision_stem_start = -1.0
-    collision_stem_end = -20.0
+    # Two-phase training configuration
+    phase1_steps = 5e6  # Phase 1: Learn grasping (Actor + Critic)
+    phase2_steps = 3e6  # Phase 2: Learn value discrimination (Critic only)
     
-    # Orientation strictness changes (power)
+    # Stem collision penalty changes (reduced severity)
+    collision_stem_start = -0.5
+    collision_stem_end = -5.0
+    
+    # Orientation strictness changes (reduced severity)
     orient_power_start = 1.0
-    orient_power_end = 4.0
+    orient_power_end = 2.0
+    
+    # Adaptive curriculum parameters
+    success_rate_threshold = 0.3
+    difficulty_decay_rate = 0.1
 
 ## AVP (Asymmetric Value Propagation) Configuration
 ## Toggle for ablation studies
@@ -185,9 +193,59 @@ class avp:
     # Checkpoint path for Stage 2 Critic (relative to project root)
     checkpoint_path = "assets/checkpoints/avp/stage2_critic.pth"
     
-    # Virtual observation configuration (pre-grasp posture)
-    ready_pose = np.array([0.0, -0.5, 0.0, 1.5, 0.0, 0.0])
+    # Virtual observation configuration (pre-grasp posture, matches Stage 2)
+    ready_pose = np.array([0.0, 0.0, 0.0, 0.8, 0.0, 0.0])
     
     # Network dimensions (must match Stage 2 training)
     state_dim = 35
     img_size = 84
+
+## Depth Noise Configuration (for sim-to-real transfer)
+## Simulates RealSense D435i artifacts in outdoor/agricultural scenes
+class depth_noise:
+    # Master switch
+    enabled = True
+    
+    # Cutout noise (rectangular block dropout - simulates depth camera holes)
+    cutout_enabled = True
+    cutout_num = (1, 3)          # Range of number of cutout blocks
+    cutout_size = (0.05, 0.15)   # Ratio of image dimensions
+    
+    # Salt-Pepper noise (extreme depth values - simulates specular reflections)
+    salt_pepper_enabled = True
+    salt_ratio = (0.01, 0.03)    # Pixels set to max depth
+    pepper_ratio = (0.02, 0.05)  # Pixels set to 0
+    
+    # Pixel dropout (scattered missing pixels)
+    dropout_rate = (0.05, 0.10)
+    
+    # Depth-dependent Gaussian noise (far objects noisier)
+    depth_dependent = True
+    base_std = 0.01              # Base noise for near objects
+    scale_factor = 0.03          # Additional noise scaling with depth
+    
+    # Edge blur (depth discontinuity artifacts)
+    edge_blur_enabled = True
+    edge_noise_std = 0.1
+
+## Lighting Domain Randomization Configuration
+class lighting_dr:
+    # Master switch
+    enabled = True
+    
+    # Ambient light intensity range (simulates overcast vs clear sky)
+    ambient_range = (0.1, 0.5)
+    
+    # Diffuse light intensity range (simulates sun intensity)
+    diffuse_range = (0.3, 0.8)
+    
+    # Light direction noise (simulates different sun positions)
+    dir_noise = 0.3
+
+## Ground Color Domain Randomization
+class ground_dr:
+    # Master switch
+    enabled = True
+    
+    # Ground types: soil_dry, soil_wet, grass, gravel
+    ground_types = ['soil_dry', 'soil_wet', 'grass', 'gravel']

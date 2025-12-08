@@ -291,13 +291,49 @@ class DcmmVecEnvStage2(gym.Env):
         # Curriculum Learning Params
         self.global_step = 0
         self.current_w_stem = DcmmCfg.curriculum.collision_stem_start
-        self.current_w_stem = DcmmCfg.curriculum.collision_stem_start
         self.current_orient_power = DcmmCfg.curriculum.orient_power_start
         self.last_debug_step = -1
+        
+        # Two-phase training control
+        self.use_extreme_distribution = False  # Phase 1 by default
+        self.training_phase = 1  # 1 = Actor+Critic, 2 = Critic only
+        self.success_history = deque(maxlen=100)  # For adaptive curriculum
+        self.adaptive_difficulty = 0.0
+        
+        # Pre-grasp pose (maximum flexibility)
+        self.pre_grasp_pose = np.array([0.0, 0.0, 0.0, 0.8, 0.0, 0.0])
 
     def set_object_eval(self):
         """Set environment to use evaluation objects."""
         self.object_train = False
+
+    def set_training_phase(self, phase):
+        """
+        Switch training phase.
+        
+        Args:
+            phase: 1 = Phase 1 (Actor + Critic, mostly reachable samples)
+                   2 = Phase 2 (Critic only, 50% reachable + 50% extreme)
+        """
+        self.training_phase = phase
+        self.use_extreme_distribution = (phase == 2)
+        print(f"[Stage2] Switched to Phase {phase}, extreme_distribution={self.use_extreme_distribution}")
+    
+    def record_episode_result(self, is_success):
+        """
+        Record episode result for adaptive curriculum.
+        
+        Args:
+            is_success: True if episode was successful
+        """
+        self.success_history.append(1.0 if is_success else 0.0)
+    
+    def get_recent_success_rate(self):
+        """Get success rate from recent episodes."""
+        if len(self.success_history) >= 20:
+            return sum(self.success_history) / len(self.success_history)
+        return 0.0
+
 
     def update_render_state(self, render_per_step):
         """Update rendering state."""
@@ -332,7 +368,7 @@ class DcmmVecEnvStage2(gym.Env):
         }
 
     def _reset_simulation(self):
-        """Reset the MuJoCo simulation (uses RandomizationManager)."""
+        """Reset the MuJoCo simulation with Stage 2 AVP initialization."""
         # Reset the data in Mujoco Simulation
         mujoco.mj_resetData(self.Dcmm.model, self.Dcmm.data)
         mujoco.mj_resetData(self.Dcmm.model_arm, self.Dcmm.data_arm)
@@ -342,51 +378,27 @@ class DcmmVecEnvStage2(gym.Env):
             self.Dcmm.data_arm.act[:] = None
         self.Dcmm.data.ctrl = np.zeros(self.Dcmm.model.nu)
         self.Dcmm.data_arm.ctrl = np.zeros(self.Dcmm.model_arm.nu)
-        self.Dcmm.data.qpos[15:21] = DcmmCfg.arm_joints[:]
         self.Dcmm.data.qpos[21:37] = DcmmCfg.hand_joints[:]
-        self.Dcmm.data_arm.qpos[0:6] = DcmmCfg.arm_joints[:]
-        self.Dcmm.data_arm.qpos[0:6] = DcmmCfg.arm_joints[:]
         self.Dcmm.data.body("object").xpos[0:3] = np.array([2, 2, 1])
 
-
-        # Stage 2 Initialization: Include UNREACHABLE samples
-        # Generate objects in range [0.05m, 2.0m] from end-effector
-        # This creates many "impossible" scenarios to teach the agent:
-        # - When fruit is too far (> 0.20m = unreachable by hand)
-        # - Different difficulty levels for curriculum learning
-        # - Realistic distribution matching Stage 1 training
+        # ========================================
+        # Stage 2 AVP Initialization:
+        # - Plant + Fruit generation (same as Stage 1)
+        # - Pre-grasp pose for maximum flexibility
+        # - Teleport robot based on EE-to-fruit distance
+        # - No occluders (Stage 1 handles obstacle avoidance)
+        # ========================================
+        self.random_manager.randomize_stage2_avp_scene(
+            use_extreme_distribution=self.use_extreme_distribution
+        )
         
-        # Get EE position from forward kinematics
-        mujoco.mj_forward(self.Dcmm.model, self.Dcmm.data)
-        ee_pos = self.Dcmm.data.body("link6").xpos
-        
-        # Sample distance r in [0.05m, 2.0m] (matching Stage 1 max range)
-        # 0.05m - 0.20m: Reachable samples (~7.5% of volume)
-        # 0.20m - 2.0m: Unreachable samples (~92.5% of volume)
-        r = np.random.uniform(0.05, 2.0)
-        
-        # Sample random direction on sphere
-        theta = np.random.uniform(0, np.pi)      # Polar angle
-        phi = np.random.uniform(0, 2*np.pi)      # Azimuthal angle
-        
-        dx = r * np.sin(theta) * np.cos(phi)
-        dy = r * np.sin(theta) * np.sin(phi)
-        dz = r * np.cos(theta)
-        
-        # Set object position relative to EE
-        self.object_pos3d = ee_pos + np.array([dx, dy, dz])
-        
-        # Ensure object is above ground (minimum height 0.1m)
-        self.object_pos3d[2] = max(self.object_pos3d[2], 0.1)
-        
-        # Set object mocap position
+        # Set fruit mocap position
         object_body_id = mujoco.mj_name2id(self.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, "object")
         if object_body_id != -1:
             object_mocap_id = self.Dcmm.model.body_mocapid[object_body_id]
             if object_mocap_id != -1:
                 self.Dcmm.data.mocap_pos[object_mocap_id] = self.object_pos3d
                 self.Dcmm.data.mocap_quat[object_mocap_id] = self.object_q
-
 
         # Random Gravity
         self.Dcmm.model.opt.gravity[2] = -9.81 + 0.5*np.random.uniform(-1, 1)
@@ -508,6 +520,13 @@ class DcmmVecEnvStage2(gym.Env):
         """Set the global training step for curriculum learning."""
         self.global_step = step
 
+    def get_reward_stats(self):
+        """Get reward decomposition statistics for WandB logging."""
+        if hasattr(self, 'reward_manager') and hasattr(self.reward_manager, 'get_reward_stats_and_reset'):
+            return self.reward_manager.get_reward_stats_and_reset()
+        return None
+
+
     def step(self, action):
         """
         Execute one environment step.
@@ -576,39 +595,65 @@ class DcmmVecEnvStage2(gym.Env):
                                 len(self.action_buffer['hand'])])
             info['ctrl_params'] = np.concatenate((self.k_arm, self.k_drive, self.k_hand, ctrl_delay))
 
-            # Check truncation conditions
+            # Check truncation and success conditions
+            truncated = False
+            
             if self.task == "Catching":
+                # Truncation: Time limit exceeded
                 if info["env_time"] > self.env_time:
                     truncated = True
-                else:
-                    truncated = False
-            elif self.task == "Tracking":
-                # Success Condition: 2 seconds of stable soft touch
-                # Check if current touch is "stable" (1.0N <= force <= 2.5N)
-                total_force = np.sum(obs['touch'])
-                if 1.0 <= total_force <= 2.5:
+                    # Record failure for adaptive curriculum
+                    self.record_episode_result(False)
+                
+                # Success Condition for Catching (Relaxed):
+                # 1. Each finger has stable soft contact (0.1N <= force <= 2.0N per finger)
+                # 2. Must hold for 1.0 seconds
+                # 3. Perturbation test passed (handled in reward_manager)
+                
+                touch_sensors = obs['touch']  # 4 touch sensors (one per finger)
+                min_force_per_finger = 0.1   # Reduced from 0.2
+                max_force_per_finger = 2.0   # Increased from 1.0
+                min_fingers_required = 2     # Reduced from 3
+                
+                # Count fingers with stable soft contact
+                fingers_with_stable_contact = 0
+                for finger_force in touch_sensors:
+                    if min_force_per_finger <= finger_force <= max_force_per_finger:
+                        fingers_with_stable_contact += 1
+                
+                # Check if enough fingers have stable contact
+                if fingers_with_stable_contact >= min_fingers_required:
                     self.stable_touch_timer += self.Dcmm.model.opt.timestep * self.steps_per_policy
                 else:
                     self.stable_touch_timer = 0.0
                 
-                if self.stable_touch_timer >= 2.0:
-                    terminated = True
-                    info['is_success'] = True
-                    print("SUCCESS: Stable soft touch for 2.0s!")
+                # Success: 1.0 seconds of stable multi-finger contact (reduced from 2.0s)
+                if self.stable_touch_timer >= 1.0:
+                    # Check perturbation test result (slippage < 1cm)
+                    if not self.reward_manager.perturbation_active:
+                        # Perturbation test completed successfully
+                        self.terminated = True
+                        info['is_success'] = True
+                        # Record success for adaptive curriculum
+                        self.record_episode_result(True)
+                        print(f"SUCCESS: Stable grasp for 1.0s! Fingers: {fingers_with_stable_contact}")
+                
+            elif self.task == "Tracking":
+                # Tracking task: Only arm control, no hand control
+                # Success Condition: Reach close enough to target (ee_distance < 0.05m)
+                if info["env_time"] > self.env_time:
+                    truncated = True
+                
+                if info['ee_distance'] < 0.05:
+                    self.stable_touch_timer += self.Dcmm.model.opt.timestep * self.steps_per_policy
                 else:
-                    terminated = False
-                    
-                # Old logic removed/replaced
-                # if self.step_touch:
-                #     self.contact_count += 1
-                #     if self.contact_count >= 10:
-                #         truncated = True
-                #     else:
-                #         truncated = False
-                # else:
-                #     # Lost contact, reset counter
-                #     self.contact_count = 0
-                #     truncated = False
+                    self.stable_touch_timer = 0.0
+                
+                # Success: Stay close for 1.0 second
+                if self.stable_touch_timer >= 1.0:
+                    self.terminated = True
+                    info['is_success'] = True
+                    print("SUCCESS: Tracking - Reached target for 1.0s!")
 
             terminated = self.terminated
             done = terminated or truncated

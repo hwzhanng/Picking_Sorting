@@ -58,8 +58,8 @@ class RewardManagerStage2:
             np.cos(theta)
         ])
         
-        # Random force magnitude (2-5N)
-        self.perturbation_force_mag = np.random.uniform(2.0, 5.0)
+        # Random force magnitude (reduced for easier training)
+        self.perturbation_force_mag = np.random.uniform(0.5, 1.5)
         
         # Apply force to object via MuJoCo's external force array
         # xfrc_applied is [force_x, force_y, force_z, torque_x, torque_y, torque_z]
@@ -155,6 +155,18 @@ class RewardManagerStage2:
         # 1. EE Reaching Reward: Normalized tanh (0.0 to 1.0)
         # When d=0, reward=1.0; when d is large, reward -> 0.0
         reward_reaching = 1.0 * (1.0 - np.tanh(2.0 * info["ee_distance"]))
+        
+        # 1b. Distance Shaping Reward (milestone bonuses for approaching)
+        reward_distance_shaping = 0.0
+        ee_dist = info["ee_distance"]
+        if ee_dist < 0.30:
+            reward_distance_shaping += 1.0
+        if ee_dist < 0.15:
+            reward_distance_shaping += 2.0
+        if ee_dist < 0.08:
+            reward_distance_shaping += 3.0
+        if ee_dist < 0.05:  # Stage 1 target distance
+            reward_distance_shaping += 5.0
 
         # 2. Base Approach Reward: REMOVED (Base is locked)
         reward_base_approach = 0.0
@@ -181,16 +193,16 @@ class RewardManagerStage2:
             # Stricter alignment reward (Dynamic power)
             reward_orientation = max(0, alignment) ** self.env.current_orient_power * 2.0
 
-        # 4. Soft Grasp Reward (Force Feedback)
+        # 4. Soft Grasp Reward (Force Feedback) - Relaxed thresholds
         reward_grasp = 0.0
         total_contact_force = np.sum(obs['touch'])
-        force_threshold_low = 1.0
-        force_threshold_high = 2.5
+        force_threshold_low = 0.5   # Reduced from 1.0
+        force_threshold_high = 4.0   # Increased from 2.5
         
         if total_contact_force > 0.01: # If touching
             if total_contact_force < force_threshold_low:
-                # Too weak: small reward proportional to force
-                reward_grasp = 0.5 * total_contact_force
+                # Any contact gets base reward + bonus for force
+                reward_grasp = 2.0 + 1.0 * total_contact_force
             elif force_threshold_low <= total_contact_force <= force_threshold_high:
                 # Perfect range: High dense reward
                 reward_grasp = 5.0
@@ -198,8 +210,8 @@ class RewardManagerStage2:
                 fingers_touching = np.count_nonzero(obs['touch'] > 0.1)
                 reward_grasp += fingers_touching * 1.0
             else: # > force_threshold_high
-                # Too strong: Penalty
-                reward_grasp = 5.0 - 2.0 * (total_contact_force - force_threshold_high)
+                # Too strong: Gentle penalty (reduced from -10 to -3)
+                reward_grasp = max(-3.0, 3.0 - 0.5 * (total_contact_force - force_threshold_high))
         
         # 4b. Perturbation Test Reward (Grasp Stability Validation)
         reward_perturbation = self.evaluate_grasp_stability(total_contact_force)
@@ -211,21 +223,21 @@ class RewardManagerStage2:
              ee_vel_global = self.env.Dcmm.data.body("link6").cvel[3:6]
              impact_speed = np.linalg.norm(ee_vel_global)
              
-             # Strengthened exponential penalty (Problem 3 fix)
-             # Adjusted: threshold 0.3, coefficient -6.0
+             # Reduced exponential penalty with lower cap
              # Speed < 0.3m/s -> penalty ~ 0
-             # Speed = 0.5m/s -> penalty ~ -10.3 (offsets max contact reward 9.0)
-             # Speed = 1.0m/s -> penalty ~ -386
-             reward_impact = -6.0 * (np.exp(5.0 * max(0, impact_speed - 0.3)) - 1.0)
+             # Speed = 0.5m/s -> penalty ~ -3.4
+             # Speed >= 1.0m/s -> penalty capped at -10.0 (reduced from -30)
+             raw_impact_penalty = -2.0 * (np.exp(3.0 * max(0, impact_speed - 0.3)) - 1.0)
+             reward_impact = max(-10.0, raw_impact_penalty)  # Reduced cap
 
         # 6. Regularization: Keep control smooth
         reward_regularization = -self.norm_ctrl(ctrl, ['arm', 'hand']) * 0.01
 
-        # 7. Collision Penalty (catastrophic failure)
+        # 7. Collision Penalty (reduced severity)
         reward_collision = 0.0
         # If terminated but NOT success -> Failure
         if self.env.terminated and not info.get('is_success', False):
-             reward_collision = -10.0
+             reward_collision = -5.0  # Reduced from -10.0
 
         # 8. Plant Collision Penalty: Differentiated
         reward_plant_collision = 0.0
@@ -257,10 +269,25 @@ class RewardManagerStage2:
         if info.get('is_success', False):
             reward_success = 50.0 # Large sparse reward
 
-        rewards = (reward_reaching + reward_orientation +
+        rewards = (reward_reaching + reward_distance_shaping + reward_orientation +
                   reward_grasp + reward_perturbation + reward_impact + 
                   reward_regularization + reward_collision +
                   reward_plant_collision + reward_action_rate + reward_success)
+
+        # Track reward components for WandB logging
+        if not hasattr(self, 'reward_stats'):
+            self._init_reward_stats()
+        self.reward_stats['reaching_sum'] += reward_reaching
+        self.reward_stats['distance_shaping_sum'] += reward_distance_shaping
+        self.reward_stats['orientation_sum'] += reward_orientation
+        self.reward_stats['grasp_sum'] += reward_grasp
+        self.reward_stats['perturbation_sum'] += reward_perturbation
+        self.reward_stats['impact_sum'] += reward_impact
+        self.reward_stats['collision_sum'] += reward_collision
+        self.reward_stats['success_sum'] += reward_success
+        self.reward_stats['contact_force_sum'] += total_contact_force
+        self.reward_stats['fingers_touching_sum'] += np.count_nonzero(obs['touch'] > 0.1)
+        self.reward_stats['count'] += 1
 
         if self.env.print_reward:
             print(f"reward_reaching: {reward_reaching:.3f}")
@@ -275,3 +302,49 @@ class RewardManagerStage2:
             print(f"total reward: {rewards:.3f}\n")
 
         return rewards
+
+    def _init_reward_stats(self):
+        """Initialize reward statistics for WandB logging."""
+        self.reward_stats = {
+            'reaching_sum': 0.0,
+            'distance_shaping_sum': 0.0,
+            'orientation_sum': 0.0,
+            'grasp_sum': 0.0,
+            'perturbation_sum': 0.0,
+            'impact_sum': 0.0,
+            'collision_sum': 0.0,
+            'success_sum': 0.0,
+            'contact_force_sum': 0.0,
+            'fingers_touching_sum': 0,
+            'count': 0,
+        }
+    
+    def get_reward_stats_and_reset(self):
+        """
+        Get reward statistics for WandB logging and reset counters.
+        
+        Returns:
+            dict: Reward component averages
+        """
+        if not hasattr(self, 'reward_stats') or self.reward_stats['count'] == 0:
+            return None
+        
+        count = self.reward_stats['count']
+        stats = {
+            'rewards/reaching_mean': self.reward_stats['reaching_sum'] / count,
+            'rewards/distance_shaping_mean': self.reward_stats['distance_shaping_sum'] / count,
+            'rewards/orientation_mean': self.reward_stats['orientation_sum'] / count,
+            'rewards/grasp_mean': self.reward_stats['grasp_sum'] / count,
+            'rewards/perturbation_mean': self.reward_stats['perturbation_sum'] / count,
+            'rewards/impact_mean': self.reward_stats['impact_sum'] / count,
+            'rewards/collision_mean': self.reward_stats['collision_sum'] / count,
+            'rewards/success_mean': self.reward_stats['success_sum'] / count,
+            'grasp/contact_force_mean': self.reward_stats['contact_force_sum'] / count,
+            'grasp/fingers_touching_mean': self.reward_stats['fingers_touching_sum'] / count,
+        }
+        
+        # Reset counters
+        self._init_reward_stats()
+        
+        return stats
+

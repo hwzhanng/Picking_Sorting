@@ -139,6 +139,16 @@ class PPO_Stage2(object):
         self.all_time = 0
 
         self.hard_case = False
+        
+        # ========================================
+        # Two-Phase Training Configuration
+        # ========================================
+        import configs.env.DcmmCfg as DcmmCfg
+        self.phase1_steps = int(getattr(DcmmCfg.curriculum, 'phase1_steps', 5e6))
+        self.phase2_steps = int(getattr(DcmmCfg.curriculum, 'phase2_steps', 3e6))
+        self.current_phase = 1  # 1 = Actor + Critic, 2 = Critic only
+        self.phase_switched = False
+        print(f"[PPO_Stage2] Two-Phase Training: Phase 1 = {self.phase1_steps/1e6:.1f}M steps, Phase 2 = {self.phase2_steps/1e6:.1f}M steps")
 
     def load_tracking_model(self, checkpoint_tracking, checkpoint_catching):
         """
@@ -202,6 +212,47 @@ class PPO_Stage2(object):
         if self.normalize_value:
             self.value_mean_std.train()
 
+    def _switch_to_phase2(self):
+        """
+        Switch from Phase 1 (Actor + Critic) to Phase 2 (Critic only).
+        - Save the current model as best_actor_phase1
+        - Freeze Actor parameters
+        - Switch environment to extreme distribution
+        """
+        print("=" * 70)
+        print("[PPO_Stage2] SWITCHING TO PHASE 2: Critic-only training")
+        print("=" * 70)
+        
+        # Save Phase 1 checkpoint
+        phase1_path = os.path.join(self.nn_dir, 'best_actor_phase1')
+        self.save(phase1_path)
+        print(f"[PPO_Stage2] Saved Phase 1 checkpoint: {phase1_path}.pth")
+        
+        # Freeze Actor parameters
+        frozen_count = 0
+        for name, param in self.model.named_parameters():
+            # Freeze all actor-related parameters (not critic/value)
+            if 'actor' in name.lower() or 'mu' in name.lower() or 'sigma' in name.lower():
+                param.requires_grad = False
+                frozen_count += 1
+        print(f"[PPO_Stage2] Frozen {frozen_count} actor parameters")
+        
+        # Rebuild optimizer with only trainable parameters
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        self.optimizer = torch.optim.Adam(trainable_params, self.last_lr, eps=1e-5)
+        print(f"[PPO_Stage2] New optimizer with {len(trainable_params)} trainable parameters")
+        
+        # Switch environment to extreme distribution
+        try:
+            self.env.env_method("set_training_phase", 2)
+            print("[PPO_Stage2] Environment switched to Phase 2 (extreme distribution)")
+        except Exception as e:
+            print(f"[PPO_Stage2] Warning: Could not switch env phase: {e}")
+        
+        self.current_phase = 2
+        self.phase_switched = True
+        print("=" * 70)
+
     def train(self):
         start_time = time.time()
         _t = time.time()
@@ -212,6 +263,13 @@ class PPO_Stage2(object):
 
         while self.agent_steps < self.max_agent_steps:
             self.epoch_num += 1
+            
+            # ========================================
+            # Two-Phase Training: Check for Phase Switch
+            # ========================================
+            if self.agent_steps >= self.phase1_steps and not self.phase_switched:
+                self._switch_to_phase2()
+            
             a_losses, c_losses, b_losses, entropies, kls = self.train_epoch()
             self.storage.data_dict = None
 
@@ -223,7 +281,8 @@ class PPO_Stage2(object):
                 self.batch_size) \
                 / (time.time() - _last_t)
             _last_t = time.time()
-            info_string = f'Agent Steps: {int(self.agent_steps // 1e3):04}K | FPS: {all_fps:.1f} | ' \
+            phase_str = f'Phase {self.current_phase}'
+            info_string = f'Agent Steps: {int(self.agent_steps // 1e3):04}K | {phase_str} | FPS: {all_fps:.1f} | ' \
                             f'Last FPS: {last_fps:.1f} | ' \
                             f'Collect Time: {self.data_collect_time / 60:.1f} min | ' \
                             f'Train RL Time: {self.rl_train_time / 60:.1f} min | ' \
@@ -243,12 +302,34 @@ class PPO_Stage2(object):
             self.writer.add_scalar(
                 'metrics/episode_success_per_step', mean_success, self.agent_steps)
             
-            wandb.log({
+            # Enhanced WandB logging with training phase
+            log_dict = {
                 'metrics/episode_rewards_per_step': mean_rewards,
                 'metrics/episode_lengths_per_step': mean_lengths,
                 'metrics/episode_success_per_step': mean_success,
-            }, step=self.agent_steps)
+                'train/phase': self.current_phase,
+            }
+            
+            # Get success rate from environment
+            try:
+                success_rate = self.env.env_method("get_recent_success_rate")[0]
+                log_dict['train/recent_success_rate'] = success_rate
+            except:
+                pass
+            
+            wandb.log(log_dict, step=self.agent_steps)
+            
+            # Log Reward decomposition statistics
+            if hasattr(self.env, 'env_method'):
+                try:
+                    reward_stats = self.env.env_method("get_reward_stats")[0]
+                    if reward_stats:
+                        wandb.log(reward_stats, step=self.agent_steps)
+                except:
+                    pass  # Reward stats not available
+
             checkpoint_name = f'ep_{self.epoch_num}_step_{int(self.agent_steps // 1e6):04}m_reward_{mean_rewards:.2f}'
+
 
             if self.save_freq > 0:
                 if (self.epoch_num % self.save_freq == 0) and (mean_rewards <= self.best_rewards):

@@ -6,7 +6,6 @@ import mujoco
 from gym_dcmm.utils.util import calculate_arm_Te
 from gym_dcmm.utils.pid import PID
 import numpy as np
-# from gym_dcmm.utils.ik_pkg.ik_arm import IKArm  
 from gym_dcmm.utils.ik_pkg.ik_base import IKBase
 from scipy.spatial.transform import Rotation as R
 from collections import deque
@@ -107,10 +106,6 @@ class MJ_DCMM(object):
         self.arm_act = False
         self.steer_ang = np.array([0.0, 0.0, 0.0, 0.0])
         self.drive_vel = np.array([0.0, 0.0, 0.0, 0.0])
-
-        ## Define Inverse Kinematics Solver for the Arm
-        # self.ik_arm = IKArm(solver_type=DcmmCfg.ik_config["solver_type"], ilimit=DcmmCfg.ik_config["ilimit"], 
-        #                     ps=DcmmCfg.ik_config["ps"], λΣ=DcmmCfg.ik_config["λΣ"], tol=DcmmCfg.ik_config["ee_tol"])
 
         ## Initialize the camera parameters
         self.model.vis.global_.offwidth = DcmmCfg.cam_config["width"]
@@ -239,44 +234,8 @@ class MJ_DCMM(object):
         
         return mv_steer, mv_drive
     
-    # def move_ee_pose(self, delta_pose):
-    #     """
-    #     Move the end-effector to the target pose.
-    #     delta_pose[0:3]: delta x,y,z
-    #     delta_pose[3:6]: delta euler angles roll, pitch, yaw
-
-    #     Return:
-    #     - The target joint positions of the arm
-    #     """
-    #     self.current_ee_pos[:] = self.data_arm.body("link6").xpos[:]
-    #     self.current_ee_quat[:] = self.data_arm.body("link6").xquat[:]
-    #     target_pos = self.current_ee_pos + delta_pose[0:3]
-    #     r_delta = R.from_euler('zxy', delta_pose[3:6])
-    #     r_current = R.from_quat(self.current_ee_quat)
-    #     target_quat = (r_delta * r_current).as_quat()
-    #     result_QP = self.ik_arm_solve(target_pos, target_quat)
-    #     if DEBUG_ARM: print("result_QP: ", result_QP)
-    #     # Update the qpos of the arm with the IK solution
-    #     self.data_arm.qpos[0:6] = result_QP[0]
-    #     mujoco.mj_fwdPosition(self.model_arm, self.data_arm)
-        
-    #     # Compute the ee_length
-    #     relative_ee_pos = target_pos - self.data_arm.body("arm_base").xpos
-    #     ee_length = np.linalg.norm(relative_ee_pos)
-
-    #     return result_QP, ee_length
-    
-    # def ik_arm_solve(self, target_pose, target_quate):
-    #     """
-    #     Solve the IK problem for the arm.
-    #     """
-    #     # Update the arm joint position to the previous one
-    #     Tep = calculate_arm_Te(target_pose, target_quate)
-    #     if DEBUG_ARM: print("Tep: ", Tep)
-    #     result_QP = self.ik_arm.solve(self.model_arm, self.data_arm, Tep, self.data_arm.qpos[0:6])
-    #     return result_QP
-
     def set_throw_pos_vel(self, 
+ 
                           pose = np.array([0, 0, 0, 1, 0, 0, 0]), 
                           velocity = np.array([0, 0, 0, 0, 0, 0])):
         # self.data.qpos[37:44] = pose

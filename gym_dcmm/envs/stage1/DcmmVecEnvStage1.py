@@ -337,6 +337,9 @@ class DcmmVecEnvStage1(gym.Env):
         # Randomize plants and fruit
         self.random_manager.randomize_plants()
         self.random_manager.randomize_fruit_and_occlusion()
+        
+        # Apply visual domain randomization (lighting + ground color)
+        self.random_manager.apply_full_visual_dr()
 
         # Set the object position (fruit is mocap)
         object_body_id = mujoco.mj_name2id(self.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, "object")
@@ -460,6 +463,13 @@ class DcmmVecEnvStage1(gym.Env):
         if hasattr(self, 'reward_manager') and hasattr(self.reward_manager, 'get_avp_stats_and_reset'):
             return self.reward_manager.get_avp_stats_and_reset()
         return None
+
+    def get_reward_stats(self):
+        """Get reward decomposition statistics for WandB logging."""
+        if hasattr(self, 'reward_manager') and hasattr(self.reward_manager, 'get_reward_stats_and_reset'):
+            return self.reward_manager.get_reward_stats_and_reset()
+        return None
+
 
     def step(self, action):
         """

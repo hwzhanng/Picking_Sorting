@@ -65,13 +65,6 @@ class RandomizationManager:
 
         return xml_str
 
-    def random_object_pose(self):
-        """
-        Randomize object pose.
-        This method is now delegated to randomize_fruit_on_stem for plant scenario.
-        Keeping for compatibility.
-        """
-        self.randomize_fruit_on_stem()
 
     def randomize_plants(self):
         """
@@ -191,56 +184,6 @@ class RandomizationManager:
         self.env.object_vel6d = np.zeros(6)
         self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
 
-    def randomize_fruit_on_stem(self):
-        """
-        Attach fruit (object) to a random position on a random plant stem.
-        Since plants are now in frontal cone, fruit will also be in camera FOV.
-        Maintains height constraints (0.8m - 1.5m) and distance from robot.
-        """
-        max_attempts = 20
-
-        for attempt in range(max_attempts):
-            # Select random stem (0-4)
-            stem_idx = np.random.randint(0, 5)
-            stem_name = f"plant_stem_{stem_idx}"
-
-            # Get stem body and mocap IDs
-            stem_body_id = mujoco.mj_name2id(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, stem_name)
-            if stem_body_id != -1:
-                mocap_id = self.env.Dcmm.model.body_mocapid[stem_body_id]
-                if mocap_id == -1:
-                    continue
-
-                stem_pos = self.env.Dcmm.data.mocap_pos[mocap_id]
-
-                # Random height on stem (0.8m - 1.5m above ground)
-                height = np.random.uniform(0.8, 1.5)
-
-                # Slight offset from stem center for realism
-                offset_x = np.random.uniform(-0.05, 0.05)
-                offset_y = np.random.uniform(-0.05, 0.05)
-
-                fruit_x = stem_pos[0] + offset_x
-                fruit_y = stem_pos[1] + offset_y
-
-                # Validate reachability: distance from robot base
-                fruit_distance = np.sqrt(fruit_x**2 + fruit_y**2)
-
-                # Check if within reasonable reach (0.4m - 2.0m)
-                if 0.4 <= fruit_distance <= 2.0 and 0.6 <= height <= 1.6:
-                    self.env.object_pos3d = np.array([fruit_x, fruit_y, height])
-
-                    # Static object, velocity is zero
-                    self.env.object_vel6d = np.zeros(6)
-
-                    # Fixed orientation (no rotation for sphere)
-                    self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
-                    return  # Success
-
-        # Fallback: if no valid position found, use last attempt
-        self.env.object_pos3d = np.array([fruit_x, fruit_y, height])
-        self.env.object_vel6d = np.zeros(6)
-        self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
 
     def random_PID(self):
         """Randomize PID controller parameters."""
@@ -264,122 +207,257 @@ class RandomizationManager:
         self.env.action_buffer["arm"].clear()
         self.env.action_buffer["hand"].clear()
 
-    def randomize_stage2_scene(self):
+    def randomize_lighting(self, ambient_range=(0.1, 0.5), diffuse_range=(0.3, 0.8), dir_noise=0.3):
         """
-        Stage 2 Specific Randomization:
-        1. Randomize Plants.
-        2. Select Target Stem & Fruit.
-        3. Teleport Robot Base (Domain Randomization).
-        4. Place Occluder based on NEW robot position.
-        5. Include "Bad" States (Singularity/Occlusion).
+        Randomize lighting conditions for domain randomization.
+        
+        Simulates different outdoor lighting conditions:
+        - Overcast (low diffuse, high ambient)
+        - Direct sunlight (high diffuse, low ambient)
+        - Different sun positions (direction noise)
+        
+        Args:
+            ambient_range: (min, max) range for ambient light intensity
+            diffuse_range: (min, max) range for diffuse light intensity
+            dir_noise: Maximum deviation for light direction
         """
-        # 1. Randomize Plants (Standard)
-        self.randomize_plants()
-
-        # 2. Select Target Stem
-        target_idx = np.random.randint(0, 8)
-        target_stem_name = f"plant_stem_{target_idx}"
-        target_body_id = mujoco.mj_name2id(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, target_stem_name)
-        target_mocap_id = self.env.Dcmm.model.body_mocapid[target_body_id]
-        target_pos = self.env.Dcmm.data.mocap_pos[target_mocap_id].copy()
-
-        # 3. Teleport Robot Base
-        # Determine "Front" direction relative to the stem
-        # We want the robot to be roughly "facing" the stem/fruit, but the fruit is ON the stem.
-        # Let's define the approach angle.
+        nlight = self.env.Dcmm.model.nlight
         
-        # Decide if this is a "Bad" state (10% chance)
-        is_bad_state = np.random.random() < 0.1
-        
-        if is_bad_state:
-            # Bad State: Extreme distances or difficult angles
-            case = np.random.randint(0, 3)
-            if case == 0: # Too Far (Singularity risk)
-                dist = np.random.uniform(1.0, 1.2)
-            elif case == 1: # Too Close (Cramped)
-                dist = np.random.uniform(0.35, 0.45)
-            else: # Difficult Angle (Behind the stem?)
-                dist = np.random.uniform(0.6, 0.8)
-                # No specific angle logic yet, just rely on random angle potentially being bad?
-                # Or maybe force it to be "behind" the fruit relative to some feature?
-                pass
-        else:
-            # Normal State: Optimal working distance
-            dist = np.random.uniform(0.6, 1.0)
-
-        # Random Angle around the target
-        # Since the stem is vertical, we pick an angle in the XY plane.
-        # "Azimuth front 180 degrees" - let's assume this means we pick a random angle
-        # and orient the robot to face the target.
-        angle = np.random.uniform(-np.pi, np.pi)
-        
-        # Calculate Robot Base Position
-        # Robot is placed at 'dist' away from target in direction 'angle'
-        # So Robot Pos = Target Pos + Vector(dist, angle)
-        # Wait, if we want the robot to *face* the target, the vector from Robot to Target is (cos(theta), sin(theta))
-        # So Robot is at Target - Vector.
-        
-        robot_x = target_pos[0] + dist * np.cos(angle)
-        robot_y = target_pos[1] + dist * np.sin(angle)
-        
-        # Robot Orientation (Yaw)
-        # Robot should face the target.
-        # Vector from Robot to Target: (target_x - robot_x, target_y - robot_y)
-        # Yaw = atan2(dy, dx)
-        yaw = np.arctan2(target_pos[1] - robot_y, target_pos[0] - robot_x)
-        
-        # Convert Yaw to Quaternion (w, x, y, z)
-        # Axis: (0, 0, 1), Angle: yaw
-        # q = [cos(yaw/2), 0, 0, sin(yaw/2)]
-        cy = np.cos(yaw * 0.5)
-        sy = np.sin(yaw * 0.5)
-        robot_quat = np.array([cy, 0, 0, sy])
-        
-        # Set Robot Base State (qpos 0-6)
-        self.env.Dcmm.data.qpos[0:3] = np.array([robot_x, robot_y, 0.0]) # Z=0 for ground
-        self.env.Dcmm.data.qpos[3:7] = robot_quat
-        
-        # 4. Place Occluder
-        # Select Occluder Stem (must be different from target)
-        occluder_idx = (target_idx + 1) % 8
-        occluder_stem_name = f"plant_stem_{occluder_idx}"
-        occluder_body_id = mujoco.mj_name2id(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, occluder_stem_name)
-        occluder_mocap_id = self.env.Dcmm.model.body_mocapid[occluder_body_id]
-        
-        # Calculate Occluder Position
-        # Place between Robot and Target
-        # Ratio: 0.3 to 0.7 (closer to robot or closer to fruit)
-        ratio = np.random.uniform(0.3, 0.7)
-        
-        # If "Bad" state (Occlusion), make it harder
-        if is_bad_state and np.random.random() < 0.5:
-             # Hard Occlusion: Directly in line, close to fruit
-             ratio = np.random.uniform(0.7, 0.9)
-        
-        occluder_pos = np.array([robot_x, robot_y, 0]) + ratio * (target_pos - np.array([robot_x, robot_y, 0]))
-        
-        # Add some noise to occluder position so it's not always perfectly centered (unless bad state)
-        if not is_bad_state:
-            occluder_pos[0] += np.random.uniform(-0.1, 0.1)
-            occluder_pos[1] += np.random.uniform(-0.1, 0.1)
+        for i in range(nlight):
+            # Randomize ambient light (uniform color)
+            ambient = np.random.uniform(ambient_range[0], ambient_range[1])
+            self.env.Dcmm.model.light_ambient[i] = [ambient, ambient, ambient]
             
-        self.env.Dcmm.data.mocap_pos[occluder_mocap_id] = occluder_pos
+            # Randomize diffuse light (can have slight color variation)
+            diffuse_base = np.random.uniform(diffuse_range[0], diffuse_range[1])
+            # Slight color temperature variation (warm vs cool light)
+            color_temp = np.random.uniform(-0.1, 0.1)
+            diffuse_r = diffuse_base + color_temp * 0.5  # Warm adds red
+            diffuse_b = diffuse_base - color_temp * 0.5  # Cool adds blue
+            diffuse_g = diffuse_base
+            self.env.Dcmm.model.light_diffuse[i] = [
+                np.clip(diffuse_r, 0, 1),
+                np.clip(diffuse_g, 0, 1),
+                np.clip(diffuse_b, 0, 1)
+            ]
+            
+            # Randomize light direction (for directional lights)
+            # Add noise to existing direction
+            dir_original = self.env.Dcmm.model.light_dir[i].copy()
+            dir_perturbation = np.random.uniform(-dir_noise, dir_noise, 3)
+            new_dir = dir_original + dir_perturbation
+            # Normalize direction vector
+            new_dir = new_dir / (np.linalg.norm(new_dir) + 1e-6)
+            self.env.Dcmm.model.light_dir[i] = new_dir
+
+    def randomize_ground(self):
+        """
+        Randomize ground plane color for domain randomization.
         
-        # 5. Attach Fruit to Target Stem
-        # Random height on stem (0.8m - 1.5m)
-        height = np.random.uniform(0.8, 1.5)
+        Simulates different ground conditions:
+        - Dry soil (brown/tan)
+        - Wet soil (darker brown)
+        - Grass-covered (greenish)
+        - Gravel/concrete (grey)
+        """
+        # Find floor geom - try common names
+        floor_names = ["floor", "ground", "plane"]
+        floor_id = -1
         
-        # Orientation of fruit relative to stem
-        # If we want the fruit to be "reachable", it should probably face the robot?
-        # Or random? Real fruits are random.
-        # Let's add a small offset from the stem center.
-        offset_angle = np.random.uniform(-np.pi, np.pi)
-        offset_r = 0.05 # 5cm radius from stem center
+        for name in floor_names:
+            floor_id = mujoco.mj_name2id(
+                self.env.Dcmm.model, 
+                mujoco.mjtObj.mjOBJ_GEOM, 
+                name
+            )
+            if floor_id != -1:
+                break
         
-        fruit_x = target_pos[0] + offset_r * np.cos(offset_angle)
-        fruit_y = target_pos[1] + offset_r * np.sin(offset_angle)
+        if floor_id == -1:
+            # Try finding by iterating geoms
+            for i in range(self.env.Dcmm.model.ngeom):
+                name = mujoco.mj_id2name(self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_GEOM, i)
+                if name and ("floor" in name.lower() or "ground" in name.lower()):
+                    floor_id = i
+                    break
         
-        self.env.object_pos3d = np.array([fruit_x, fruit_y, height])
+        if floor_id == -1:
+            return  # No floor found
+        
+        # Randomly select ground type
+        ground_type = np.random.choice(['soil_dry', 'soil_wet', 'grass', 'gravel'])
+        
+        if ground_type == 'soil_dry':
+            # Brown/tan spectrum
+            r = np.random.uniform(0.45, 0.60)
+            g = np.random.uniform(0.35, 0.45)
+            b = np.random.uniform(0.20, 0.30)
+        elif ground_type == 'soil_wet':
+            # Darker brown
+            r = np.random.uniform(0.25, 0.40)
+            g = np.random.uniform(0.20, 0.30)
+            b = np.random.uniform(0.10, 0.20)
+        elif ground_type == 'grass':
+            # Greenish brown
+            r = np.random.uniform(0.25, 0.40)
+            g = np.random.uniform(0.40, 0.55)
+            b = np.random.uniform(0.15, 0.25)
+        else:  # gravel
+            # Grey spectrum
+            grey = np.random.uniform(0.4, 0.6)
+            r = grey + np.random.uniform(-0.05, 0.05)
+            g = grey + np.random.uniform(-0.05, 0.05)
+            b = grey + np.random.uniform(-0.05, 0.05)
+        
+        self.env.Dcmm.model.geom_rgba[floor_id] = [r, g, b, 1.0]
+
+    def apply_full_visual_dr(self):
+        """
+        Apply full visual domain randomization.
+        
+        Convenience method that applies all visual randomization at once:
+        - Lighting randomization
+        - Ground color randomization
+        - Leaf/stem color randomization (already in randomize_plants)
+        """
+        self.randomize_lighting()
+        self.randomize_ground()
+
+    def randomize_stage2_avp_scene(self, use_extreme_distribution=False):
+        """
+        Stage 2 AVP dedicated initialization:
+        - Plant + Fruit generation (same as Stage 1)
+        - Set pre-grasp pose for maximum flexibility
+        - Teleport robot based on EE-to-fruit distance
+        - No occluders (Stage 1 handles obstacle avoidance)
+        
+        Args:
+            use_extreme_distribution: 
+                False = Phase 1 (90% reachable samples)
+                True = Phase 2 (50% reachable + 50% extreme samples)
+        """
+        
+        # ========================================
+        # 1. Randomize Plants
+        # ========================================
+        self.randomize_plants()
+        
+        # ========================================
+        # 2. Generate Fruit on Random Stem
+        # ========================================
+        stem_idx = np.random.randint(0, 5)
+        stem_name = f"plant_stem_{stem_idx}"
+        stem_body_id = mujoco.mj_name2id(
+            self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, stem_name
+        )
+        
+        if stem_body_id != -1:
+            mocap_id = self.env.Dcmm.model.body_mocapid[stem_body_id]
+            if mocap_id != -1:
+                stem_pos = self.env.Dcmm.data.mocap_pos[mocap_id].copy()
+            else:
+                stem_pos = np.array([0.0, 1.0, 0.0])
+        else:
+            stem_pos = np.array([0.0, 1.0, 0.0])
+        
+        # Fruit height: 0.4m ~ 0.85m (within arm reachable range)
+        fruit_height = np.random.uniform(0.4, 0.85)
+        
+        # Fruit position (slight offset from stem)
+        offset_x = np.random.uniform(-0.05, 0.05)
+        offset_y = np.random.uniform(-0.05, 0.05)
+        fruit_pos = np.array([
+            stem_pos[0] + offset_x, 
+            stem_pos[1] + offset_y, 
+            fruit_height
+        ])
+        
+        self.env.object_pos3d = fruit_pos
         self.env.object_vel6d = np.zeros(6)
         self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
+        
+        # ========================================
+        # 3. Set Pre-grasp Pose and Compute EE Offset
+        # ========================================
+        pre_grasp_pose = np.array([0.0, 0.0, 0.0, 0.8, 0.0, 0.0])
+        
+        # Reset robot to origin to measure EE offset in robot frame
+        self.env.Dcmm.data.qpos[0:3] = np.array([0, 0, 0])
+        self.env.Dcmm.data.qpos[3:7] = np.array([1, 0, 0, 0])  # No rotation
+        self.env.Dcmm.data.qpos[15:21] = pre_grasp_pose
+        mujoco.mj_forward(self.env.Dcmm.model, self.env.Dcmm.data)
+        
+        # Root-to-EE offset in robot frame (yaw=0)
+        root_pos = self.env.Dcmm.data.qpos[0:3].copy()
+        ee_pos_local = self.env.Dcmm.data.body('link6').xpos.copy()
+        ee_offset_local = ee_pos_local - root_pos  # [~0.05, ~0.30, ~0.41]
+        
+        # Forward reach in robot's +Y direction
+        forward_reach = ee_offset_local[1]  # ~0.30m
+        side_offset = ee_offset_local[0]    # ~0.05m (small)
+        
+        # ========================================
+        # 4. Teleport Robot Based on EE Distance
+        # ========================================
+        # Compute target EE-to-fruit distance
+        if use_extreme_distribution:
+            # Phase 2: 50% reachable + 50% extreme
+            if np.random.random() < 0.5:
+                ee_to_fruit_dist = np.random.uniform(0.05, 0.25)  # Reachable
+            else:
+                ee_to_fruit_dist = np.random.uniform(0.25, 1.50)  # Extreme
+        else:
+            # Phase 1: 90% reachable + 10% edge
+            if np.random.random() < 0.9:
+                ee_to_fruit_dist = np.random.uniform(0.05, 0.25)  # Reachable
+            else:
+                ee_to_fruit_dist = np.random.uniform(0.25, 0.50)  # Edge
+        
+        # Approach angle: robot approaches from this direction towards fruit
+        approach_angle = np.random.uniform(-np.pi, np.pi)
+        
+        # Robot faces the fruit: yaw = approach_angle + π
+        yaw = approach_angle + np.pi
+        
+        # In world frame, when robot has yaw rotation, the EE offset transforms:
+        # EE_world = Root_world + R(yaw) @ EE_local_xy + [0,0,Z]
+        # Where R(yaw) is 2D rotation matrix
+        
+        # We want: ||EE_world - fruit_pos||_xy = ee_to_fruit_dist
+        # (ignoring Z difference for placement calculation)
+        
+        # The EE will be at:
+        #   EE_x = Root_x + cos(yaw)*side_offset - sin(yaw)*forward_reach
+        #   EE_y = Root_y + sin(yaw)*side_offset + cos(yaw)*forward_reach
+        
+        # For EE to be at distance ee_to_fruit_dist from fruit, approaching from approach_angle:
+        # Target EE position (on the line from fruit in approach direction):
+        target_ee_x = fruit_pos[0] + ee_to_fruit_dist * np.cos(approach_angle)
+        target_ee_y = fruit_pos[1] + ee_to_fruit_dist * np.sin(approach_angle)
+        
+        # Solve for root position:
+        # Root_x = target_ee_x - cos(yaw)*side_offset + sin(yaw)*forward_reach
+        # Root_y = target_ee_y - sin(yaw)*side_offset - cos(yaw)*forward_reach
+        cos_yaw = np.cos(yaw)
+        sin_yaw = np.sin(yaw)
+        
+        robot_x = target_ee_x - cos_yaw * side_offset + sin_yaw * forward_reach
+        robot_y = target_ee_y - sin_yaw * side_offset - cos_yaw * forward_reach
+        robot_z = 0.0  # Base on ground
+        
+        # Set robot pose
+        cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
+        robot_quat = np.array([cy, 0, 0, sy])
+        
+        self.env.Dcmm.data.qpos[0:3] = np.array([robot_x, robot_y, robot_z])
+        self.env.Dcmm.data.qpos[3:7] = robot_quat
+        self.env.Dcmm.data.qpos[15:21] = pre_grasp_pose
+        
+        # ========================================
+        # 5. Visual Domain Randomization
+        # ========================================
+        self.apply_full_visual_dr()
+        
+        # Forward kinematics update
+        mujoco.mj_forward(self.env.Dcmm.model, self.env.Dcmm.data)
 
