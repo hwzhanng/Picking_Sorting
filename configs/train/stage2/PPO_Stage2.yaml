@@ -21,7 +21,7 @@ ppo:
   tau: 0.95
   
   # [Modified] Lower learning rate for stability
-  learning_rate: 3e-4 
+  learning_rate: 3e-4
   lr_schedule: kl
   kl_threshold: 0.016
   
@@ -42,7 +42,7 @@ ppo:
   action_catch_denorm: [1.5, 0.025, 0.15]
   
   # [Modified] Increase horizon length for long-term dependency (obstacle avoidance)
-  horizon_length: 512 
+  horizon_length: 512
   
   # Ensure (num_actors * horizon_length) / minibatch_size is integer
   minibatch_size: 512

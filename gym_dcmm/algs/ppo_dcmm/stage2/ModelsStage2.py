@@ -48,7 +48,7 @@ class DepthCNN(nn.Module):
         # Output: 32 * 7 * 7 = 1568
         
         self.linear = nn.Sequential(
-            nn.Linear(32 * 7 * 7, 256), 
+            nn.Linear(32 * 7 * 7, 256),
             nn.ReLU()
         )
     

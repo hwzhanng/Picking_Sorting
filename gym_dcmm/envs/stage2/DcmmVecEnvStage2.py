@@ -249,6 +249,10 @@ class DcmmVecEnvStage2(gym.Env):
         self.stage = self.stage_list[0]
         self.steps = 0
 
+        # [New 2025-12-09] Distance violation tolerance for grasping stage
+        self.grasping_distance_violations = 0
+        self.max_distance_violations = 10  # Allow 10 steps of tolerance
+
         self.prev_ctrl = np.zeros(20)
         self.init_ctrl = True
         self.vel_init = False
@@ -444,6 +448,7 @@ class DcmmVecEnvStage2(gym.Env):
         self.contact_count = 0  # Reset contact counter
         self.stable_touch_timer = 0.0
         self.reward_stability = 0
+        self.grasping_distance_violations = 0  # [New 2025-12-09] Reset violation counter
 
         self.info = {
             "ee_distance": np.linalg.norm(self.Dcmm.data.body("link6").xpos -
@@ -575,8 +580,17 @@ class DcmmVecEnvStage2(gym.Env):
             if self.task == 'Catching':
                 if info['ee_distance'] < DcmmCfg.distance_thresh and self.stage == "tracking":
                     self.stage = "grasping"
+                    self.grasping_distance_violations = 0  # Reset counter when entering grasping
                 elif info['ee_distance'] >= DcmmCfg.distance_thresh and self.stage == "grasping":
-                    self.terminated = True
+                    # [Modified 2025-12-09] Add tolerance instead of immediate termination
+                    self.grasping_distance_violations += 1
+                    if self.grasping_distance_violations >= self.max_distance_violations:
+                        self.terminated = True
+                        # print(f"[Terminated] Distance violations exceeded {self.max_distance_violations}")
+                else:
+                    # Reset counter if back within threshold
+                    if self.stage == "grasping":
+                        self.grasping_distance_violations = max(0, self.grasping_distance_violations - 1)
 
             # Design the reward function
             reward = self.reward_manager.compute_reward(obs, info, action)

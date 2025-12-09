@@ -162,9 +162,13 @@ class curriculum:
     stage2_steps = 10e6  # Extended curriculum period
     
     # Two-phase training configuration
-    phase1_steps = 5e6  # Phase 1: Learn grasping (Actor + Critic)
-    phase2_steps = 3e6  # Phase 2: Learn value discrimination (Critic only)
-    
+    # [Modified 2025-12-09] Phase 1 extended from 5M to 15M steps
+    phase1_steps = 15e6  # Phase 1: Learn grasping (Actor + Critic)
+    phase2_steps = 10e6  # Phase 2: Learn value discrimination (Critic only)
+
+    # [New] Success rate threshold for phase switching
+    phase_switch_success_threshold = 0.30  # 30% success rate required
+
     # Stem collision penalty changes (reduced severity)
     collision_stem_start = -0.5
     collision_stem_end = -5.0

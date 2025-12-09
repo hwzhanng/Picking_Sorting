@@ -144,11 +144,13 @@ class PPO_Stage2(object):
         # Two-Phase Training Configuration
         # ========================================
         import configs.env.DcmmCfg as DcmmCfg
-        self.phase1_steps = int(getattr(DcmmCfg.curriculum, 'phase1_steps', 5e6))
-        self.phase2_steps = int(getattr(DcmmCfg.curriculum, 'phase2_steps', 3e6))
+        self.phase1_steps = int(getattr(DcmmCfg.curriculum, 'phase1_steps', 15e6))
+        self.phase2_steps = int(getattr(DcmmCfg.curriculum, 'phase2_steps', 10e6))
+        self.phase_switch_success_threshold = getattr(DcmmCfg.curriculum, 'phase_switch_success_threshold', 0.30)
         self.current_phase = 1  # 1 = Actor + Critic, 2 = Critic only
         self.phase_switched = False
         print(f"[PPO_Stage2] Two-Phase Training: Phase 1 = {self.phase1_steps/1e6:.1f}M steps, Phase 2 = {self.phase2_steps/1e6:.1f}M steps")
+        print(f"[PPO_Stage2] Phase switch requires success_rate >= {self.phase_switch_success_threshold:.0%}")
 
     def load_tracking_model(self, checkpoint_tracking, checkpoint_catching):
         """
@@ -268,8 +270,20 @@ class PPO_Stage2(object):
             # Two-Phase Training: Check for Phase Switch
             # ========================================
             if self.agent_steps >= self.phase1_steps and not self.phase_switched:
-                self._switch_to_phase2()
-            
+                # [New] Check success rate before switching
+                try:
+                    success_rate = self.env.env_method("get_recent_success_rate")[0]
+                except:
+                    success_rate = 0.0
+
+                if success_rate >= self.phase_switch_success_threshold:
+                    print(f"[PPO_Stage2] Success rate {success_rate:.1%} >= {self.phase_switch_success_threshold:.0%}, switching to Phase 2")
+                    self._switch_to_phase2()
+                else:
+                    # Log warning every 1M steps
+                    if self.agent_steps % 1000000 < self.batch_size:
+                        print(f"[PPO_Stage2] Phase 1 extended: success_rate {success_rate:.1%} < {self.phase_switch_success_threshold:.0%}")
+
             a_losses, c_losses, b_losses, entropies, kls = self.train_epoch()
             self.storage.data_dict = None
 
