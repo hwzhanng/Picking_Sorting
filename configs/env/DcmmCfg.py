@@ -19,8 +19,10 @@ distance_thresh = 0.25
 
 ## Define the initial joint positions of the arm and the hand
 # Pre-grasp pose for maximum flexibility (Stage 2 optimized)
+# [Fix 2025-12-09] Updated to be within joint limits:
+# Joint 4 (idx 3): [1.8, 4.141], Joint 5 (idx 4): [0.0, 2.65], Joint 6 (idx 5): [-2.35, -0.785]
 arm_joints = np.array([
-   0.0, 0.0, 0.0, 0.8, 0.0, 0.0 
+   0.0, 0.0, 0.0, 1.8, 0.0, -0.785
 ])
 
 hand_joints = np.array([
@@ -198,8 +200,9 @@ class avp:
     checkpoint_path = "assets/checkpoints/avp/stage2_critic.pth"
     
     # Virtual observation configuration (pre-grasp posture, matches Stage 2)
-    ready_pose = np.array([0.0, 0.0, 0.0, 0.8, 0.0, 0.0])
-    
+    # [Fix 2025-12-09] Updated to be within joint limits
+    ready_pose = np.array([0.0, 0.0, 0.0, 1.8, 0.0, -0.785])
+
     # Network dimensions (must match Stage 2 training)
     state_dim = 35
     img_size = 84

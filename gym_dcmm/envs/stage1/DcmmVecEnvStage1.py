@@ -107,7 +107,7 @@ class DcmmVecEnvStage1(gym.Env):
         self.obs_manager = ObservationManager(self)
         self.reward_manager = RewardManagerStage1(self)
         self.random_manager = RandomizationManager(self)
-        self.control_manager = ControlManager(self)
+        self.control_manager = ControlManager(self, stage=1)  # Stage 1: hand locked
         self.render_manager = RenderManager(self)
 
         # Randomize the Object Info
@@ -253,6 +253,9 @@ class DcmmVecEnvStage1(gym.Env):
         self.contacts = {
             "object_contacts": np.array([]),
             "hand_contacts": np.array([]),
+            "base_contacts": np.array([]),
+            "plant_contacts": np.array([]),
+            "leaf_contacts": np.array([]),
         }
 
         self.object_q = np.array([1, 0, 0, 0])
@@ -381,6 +384,16 @@ class DcmmVecEnvStage1(gym.Env):
         self.Dcmm.target_base_vel = np.array([0.0, 0.0, 0.0])
         self.Dcmm.target_arm_qpos[:] = DcmmCfg.arm_joints[:]
         self.Dcmm.target_hand_qpos[:] = DcmmCfg.hand_joints[:]
+
+        # [Fix 2025-12-09] Ensure arm qpos matches target to prevent PID fighting
+        self.Dcmm.data.qpos[15:21] = self.Dcmm.target_arm_qpos.copy()
+
+        # [Fix 2025-12-09] Initialize action buffers with valid initial values
+        # This prevents IndexError when get_ctrl() accesses empty buffers
+        for _ in range(self.action_buffer["arm"].maxlen):
+            self.action_buffer["base"].append(np.zeros(3))
+            self.action_buffer["arm"].append(self.Dcmm.target_arm_qpos.copy())
+            self.action_buffer["hand"].append(self.Dcmm.target_hand_qpos.copy())
 
         # Set hand to fixed open posture
         self.Dcmm.data.qpos[21:33] = self.hand_open_angles

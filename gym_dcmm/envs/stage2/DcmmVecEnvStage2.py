@@ -107,7 +107,7 @@ class DcmmVecEnvStage2(gym.Env):
         self.obs_manager = ObservationManager(self)
         self.reward_manager = RewardManagerStage2(self)
         self.random_manager = RandomizationManager(self)
-        self.control_manager = ControlManager(self)
+        self.control_manager = ControlManager(self, stage=2)  # Stage 2: hand controlled
         self.render_manager = RenderManager(self)
 
         # Randomize the Object Info
@@ -161,7 +161,7 @@ class DcmmVecEnvStage2(gym.Env):
         self.state_dim = 35
         self.img_width = 84
         self.img_height = 84
-        
+
         self.observation_space = spaces.Dict({
             'state': spaces.Box(low=-np.inf, high=np.inf, shape=(self.state_dim,), dtype=np.float32),
             'depth': spaces.Box(low=0, high=255, shape=(1, self.img_height, self.img_width), dtype=np.uint8)
@@ -251,7 +251,7 @@ class DcmmVecEnvStage2(gym.Env):
 
         # [New 2025-12-09] Distance violation tolerance for grasping stage
         self.grasping_distance_violations = 0
-        self.max_distance_violations = 10  # Allow 10 steps of tolerance
+        self.max_distance_violations = 100  # Allow 100 steps of tolerance (2 seconds)
 
         self.prev_ctrl = np.zeros(20)
         self.init_ctrl = True
@@ -269,6 +269,9 @@ class DcmmVecEnvStage2(gym.Env):
         self.contacts = {
             "object_contacts": np.array([]),
             "hand_contacts": np.array([]),
+            "base_contacts": np.array([]),
+            "plant_contacts": np.array([]),
+            "leaf_contacts": np.array([]),
         }
 
         self.object_q = np.array([1, 0, 0, 0])
@@ -305,7 +308,8 @@ class DcmmVecEnvStage2(gym.Env):
         self.adaptive_difficulty = 0.0
         
         # Pre-grasp pose (maximum flexibility)
-        self.pre_grasp_pose = np.array([0.0, 0.0, 0.0, 0.8, 0.0, 0.0])
+        # [Fix 2025-12-09] Updated to be within joint limits
+        self.pre_grasp_pose = np.array([0.0, 0.0, 0.0, 1.8, 0.0, -0.785])
 
     def set_object_eval(self):
         """Set environment to use evaluation objects."""
@@ -436,6 +440,17 @@ class DcmmVecEnvStage2(gym.Env):
         self.Dcmm.target_base_vel = np.array([0.0, 0.0, 0.0])
         self.Dcmm.target_arm_qpos[:] = DcmmCfg.arm_joints[:]
         self.Dcmm.target_hand_qpos[:] = DcmmCfg.hand_joints[:]
+
+        # [Fix 2025-12-09] Ensure arm qpos matches target to prevent PID fighting
+        # This is crucial because randomize_stage2_avp_scene may set different positions
+        self.Dcmm.data.qpos[15:21] = self.Dcmm.target_arm_qpos.copy()
+
+        # [Fix 2025-12-09] Initialize action buffers with valid initial values
+        # This prevents IndexError when get_ctrl() accesses empty buffers
+        for _ in range(self.action_buffer["arm"].maxlen):
+            self.action_buffer["base"].append(np.zeros(3))
+            self.action_buffer["arm"].append(self.Dcmm.target_arm_qpos.copy())
+            self.action_buffer["hand"].append(self.Dcmm.target_hand_qpos.copy())
 
         # Set hand to fixed open posture
         self.Dcmm.data.qpos[21:33] = self.hand_open_angles

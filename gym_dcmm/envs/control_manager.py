@@ -12,14 +12,16 @@ import configs.env.DcmmCfg as DcmmCfg
 class ControlManager:
     """Manages control actions and contact detection for the environment."""
 
-    def __init__(self, env):
+    def __init__(self, env, stage=1):
         """
         Initialize control manager.
 
         Args:
             env: Reference to the parent DcmmVecEnv instance
+            stage: Training stage (1 = Tracking with fixed hand, 2 = Catching with hand control)
         """
         self.env = env
+        self.stage = stage  # 1 = Stage 1 (hand locked), 2 = Stage 2 (hand controlled)
         self.plant_geom_ids = []
         self.leaf_geom_ids = []
         self._cache_plant_geoms()
@@ -126,7 +128,14 @@ class ControlManager:
             np.ndarray: Control commands for the robot
         """
         # Map the action to the control
-        mv_steer, mv_drive = self.env.Dcmm.move_base_vel(self.env.action_buffer["base"][0]) # 8
+        if self.stage == 2:
+            # Stage 2: Lock base - force steer and drive to zero
+            mv_steer = np.zeros(4)
+            mv_drive = np.zeros(4)
+        else:
+            # Stage 1: Normal base control
+            mv_steer, mv_drive = self.env.Dcmm.move_base_vel(self.env.action_buffer["base"][0]) # 8
+
         mv_arm = self.env.Dcmm.arm_pid.update(self.env.action_buffer["arm"][0],
                                              self.env.Dcmm.data.qpos[15:21],
                                              self.env.Dcmm.data.time) # 6
@@ -199,8 +208,17 @@ class ControlManager:
         else:
             self.env.arm_limit = False
 
-        # Force Hand Open
-        self.env.Dcmm.target_hand_qpos[:] = self.env.Dcmm.open_hand_qpos[:]
+        # Hand control based on stage
+        if self.stage == 1:
+            # Stage 1: Force Hand Open (Tracking only)
+            self.env.Dcmm.target_hand_qpos[:] = self.env.Dcmm.open_hand_qpos[:]
+        else:
+            # Stage 2: Allow hand control from policy
+            action_hand = action_dict["hand"]
+            # Update target hand positions (absolute positions, not delta)
+            import configs.env.DcmmCfg as DcmmCfg
+            hand_joint_indices = np.where(DcmmCfg.hand_mask == 1)[0]
+            self.env.Dcmm.target_hand_qpos[hand_joint_indices] = action_hand
 
         # Add Target Action to the Buffer
         self.update_target_ctrl()
@@ -208,34 +226,67 @@ class ControlManager:
         # Reset the Criteria for Successfully Touch
         self.env.step_touch = False
 
+        # Store initial base position and velocity for locking (Stage 2)
+        # For Stage 2, we lock the base to its initial position
+        base_qpos_initial = self.env.Dcmm.data.qpos[0:9].copy()
+        base_qvel_initial = np.zeros(8)  # Force velocities to zero
+
         for _ in range(self.env.steps_per_policy):
-            # Lock hand to fixed open posture (Stage 1)
-            self.env.Dcmm.data.qpos[21:33] = self.env.hand_open_angles
+            # Stage 1: Lock hand to fixed open posture
+            # Stage 2: Allow hand to move based on target_hand_qpos
+            if self.stage == 1:
+                self.env.Dcmm.data.qpos[21:33] = self.env.hand_open_angles
+
+            # Stage 2: Lock base position and velocity
+            if self.stage == 2:
+                # Lock base joint positions (steer and drive joints)
+                self.env.Dcmm.data.qpos[0:9] = base_qpos_initial
+                # Lock base joint velocities
+                self.env.Dcmm.data.qvel[0:8] = base_qvel_initial
 
             # Update the control command according to the latest policy output
             self.env.Dcmm.data.ctrl[:] = self.get_ctrl()
 
-            if self.env.render_per_step:
-                # Rendering
-                img = self.env.render()
+            mujoco.mj_step(self.env.Dcmm.model, self.env.Dcmm.data)
+
+            # Render AFTER mj_step so viewer shows updated state
 
             mujoco.mj_step(self.env.Dcmm.model, self.env.Dcmm.data)
             mujoco.mj_rnePostConstraint(self.env.Dcmm.model, self.env.Dcmm.data)
 
-            # Update the contact information
+            # Stage 2: Re-lock base after physics step to prevent any drift
+            if self.stage == 2:
+                self.env.Dcmm.data.qpos[0:9] = base_qpos_initial
+                self.env.Dcmm.data.qvel[0:8] = base_qvel_initial
+
+            # Always sync viewer if it exists (even if not rendering images)
+            if self.env.Dcmm.viewer is not None:
+                self.env.Dcmm.viewer.sync()
+
+            # [CRITICAL FIX] Update contacts after physics step
             self.env.contacts = self.get_contacts()
 
             # Whether the base collides
-            # Ignore floor collisions for base termination
+            # Ignore floor and plant/leaf collisions for base termination
             if self.env.contacts['base_contacts'].size != 0:
-                # Check if contact is with floor
+                # Check if contact is with floor or plants
                 is_floor = np.isin(self.env.contacts['base_contacts'], [self.env.floor_id])
-                # If there are contacts OTHER than floor, terminate
-                if np.any(~is_floor):
+                is_plant = np.isin(self.env.contacts['base_contacts'], self.plant_geom_ids + self.leaf_geom_ids)
+            # Ignore floor, plant/leaf, and self-collision (hand/arm) for base termination
+                is_safe = is_floor | is_plant
+                if np.any(~is_safe):
                     self.env.terminated = True
 
-            mask_coll = self.env.contacts['object_contacts'] < self.env.hand_start_id
-            mask_finger = self.env.contacts['object_contacts'] > self.env.hand_start_id
+                # Check if contact is with robot's own hand (self-collision is OK)
+                is_self = self.env.contacts['base_contacts'] >= self.env.hand_start_id
+                # If there are contacts OTHER than floor, plants, and self, terminate
+                is_safe = is_floor | is_plant | is_self
+
+            # [FIX] Define is_plant_contact for object contacts before using it
+            is_plant_contact = np.isin(self.env.contacts['object_contacts'], self.plant_geom_ids + self.leaf_geom_ids)
+
+            # Finger is: > hand_start_id AND NOT plant
+            mask_finger = (self.env.contacts['object_contacts'] > self.env.hand_start_id) & (~is_plant_contact)
             mask_hand = self.env.contacts['object_contacts'] >= self.env.hand_start_id
             mask_palm = self.env.contacts['object_contacts'] == self.env.hand_start_id
 

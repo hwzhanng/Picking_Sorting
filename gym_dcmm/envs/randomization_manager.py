@@ -49,41 +49,57 @@ class RandomizationManager:
             # Find the <geom> element
             geom = object_body.find(".//geom[@name='object']")
             if geom is not None:
-                # Modify the type and size attributes
-                object_id = np.random.choice([0, 1, 2, 3, 4])
-                if self.env.object_train:
-                    object_shape = DcmmCfg.object_shape[object_id]
-                    geom.set("type", object_shape)  # Replace "box" with the desired type
-                    object_size = np.array([np.random.uniform(low=low, high=high)
-                                          for low, high in DcmmCfg.object_size[object_shape]])
-                    geom.set("size", np.array_str(object_size)[1:-1])  # Replace with the desired size
-                else:
-                    object_mesh = DcmmCfg.object_mesh[object_id]
-                    geom.set("mesh", object_mesh)
+                # [Modified 2025-12-09] Always use sphere shape for fruit
+                # Keep original physics parameters, only randomize size
+                geom.set("type", "sphere")
+                # Randomize sphere radius within reasonable range (0.02m ~ 0.04m)
+                sphere_radius = np.random.uniform(0.02, 0.04)
+                geom.set("size", str(sphere_radius))
         # Convert the XML element tree to a string
         xml_str = ET.tostring(root, encoding='unicode')
 
         return xml_str
 
 
-    def randomize_plants(self):
+    def randomize_plants(self, robot_pos=None):
         """
         Randomize positions of 8 plant stems.
         CRITICAL: Enforce OCCLUSION. At least one plant must be between robot and fruit.
+
+        Args:
+            robot_pos: [x, y] position of robot base. (Optional, for info only)
         """
         # Define spawn region: frontal cone
-        min_plant_distance = 0.20  # Reduced slightly for higher density
+        min_plant_distance = 0.20  # Minimum distance between plants
 
         positions = []
 
-        # Generate 8 random positions first
+        # Generate 8 random positions (no robot avoidance here - handled elsewhere)
         for i in range(8):
-            # Frontal cone: ±60° from +Y axis
-            angle = np.random.uniform(-np.pi/3, np.pi/3)
-            r = np.random.uniform(0.8, 2.0)
-            x = r * np.sin(angle)
-            y = r * np.cos(angle)
-            positions.append([x, y])
+            max_attempts = 20
+            for attempt in range(max_attempts):
+                # Frontal cone: ±60° from +Y axis
+                angle = np.random.uniform(-np.pi/3, np.pi/3)
+                r = np.random.uniform(0.8, 2.0)
+                x = r * np.sin(angle)
+                y = r * np.cos(angle)
+
+                # Check distance to existing plants only
+                valid = True
+                for pos in positions:
+                    if np.sqrt((x - pos[0])**2 + (y - pos[1])**2) < min_plant_distance:
+                        valid = False
+                        break
+                if valid:
+                    positions.append([x, y])
+                    break
+            else:
+                # Fallback: place at fixed offset
+                fallback_angle = np.pi/4 + i * np.pi/8
+                fallback_r = 1.2
+                x = fallback_r * np.sin(fallback_angle)
+                y = fallback_r * np.cos(fallback_angle)
+                positions.append([x, y])
 
         # Apply positions to mocap (temporarily)
         for i in range(8):
@@ -338,49 +354,11 @@ class RandomizationManager:
         """
         
         # ========================================
-        # 1. Randomize Plants
+        # 1. Set Pre-grasp Pose and Compute EE Offset
         # ========================================
-        self.randomize_plants()
-        
-        # ========================================
-        # 2. Generate Fruit on Random Stem
-        # ========================================
-        stem_idx = np.random.randint(0, 5)
-        stem_name = f"plant_stem_{stem_idx}"
-        stem_body_id = mujoco.mj_name2id(
-            self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, stem_name
-        )
-        
-        if stem_body_id != -1:
-            mocap_id = self.env.Dcmm.model.body_mocapid[stem_body_id]
-            if mocap_id != -1:
-                stem_pos = self.env.Dcmm.data.mocap_pos[mocap_id].copy()
-            else:
-                stem_pos = np.array([0.0, 1.0, 0.0])
-        else:
-            stem_pos = np.array([0.0, 1.0, 0.0])
-        
-        # Fruit height: 0.4m ~ 0.85m (within arm reachable range)
-        fruit_height = np.random.uniform(0.4, 0.85)
-        
-        # Fruit position (slight offset from stem)
-        offset_x = np.random.uniform(-0.05, 0.05)
-        offset_y = np.random.uniform(-0.05, 0.05)
-        fruit_pos = np.array([
-            stem_pos[0] + offset_x, 
-            stem_pos[1] + offset_y, 
-            fruit_height
-        ])
-        
-        self.env.object_pos3d = fruit_pos
-        self.env.object_vel6d = np.zeros(6)
-        self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
-        
-        # ========================================
-        # 3. Set Pre-grasp Pose and Compute EE Offset
-        # ========================================
-        pre_grasp_pose = np.array([0.0, 0.0, 0.0, 0.8, 0.0, 0.0])
-        
+        # [Fix 2025-12-09] Updated to be within joint limits
+        pre_grasp_pose = np.array([0.0, 0.0, 0.0, 1.8, 0.0, -0.785])
+
         # Reset robot to origin to measure EE offset in robot frame
         self.env.Dcmm.data.qpos[0:3] = np.array([0, 0, 0])
         self.env.Dcmm.data.qpos[3:7] = np.array([1, 0, 0, 0])  # No rotation
@@ -397,7 +375,17 @@ class RandomizationManager:
         side_offset = ee_offset_local[0]    # ~0.05m (small)
         
         # ========================================
-        # 4. Teleport Robot Based on EE Distance
+        # 2. First pass: Generate random fruit position (before robot placement)
+        # ========================================
+        # Initial fruit position (will be refined after stem placement)
+        initial_fruit_angle = np.random.uniform(-np.pi/3, np.pi/3)
+        initial_fruit_r = np.random.uniform(1.0, 1.8)
+        initial_fruit_x = initial_fruit_r * np.sin(initial_fruit_angle)
+        initial_fruit_y = initial_fruit_r * np.cos(initial_fruit_angle)
+        fruit_height = np.random.uniform(0.4, 0.85)
+
+        # ========================================
+        # 3. Compute Robot Position Based on EE Distance
         # ========================================
         # Compute target EE-to-fruit distance
         if use_extreme_distribution:
@@ -419,25 +407,11 @@ class RandomizationManager:
         # Robot faces the fruit: yaw = approach_angle + π
         yaw = approach_angle + np.pi
         
-        # In world frame, when robot has yaw rotation, the EE offset transforms:
-        # EE_world = Root_world + R(yaw) @ EE_local_xy + [0,0,Z]
-        # Where R(yaw) is 2D rotation matrix
-        
-        # We want: ||EE_world - fruit_pos||_xy = ee_to_fruit_dist
-        # (ignoring Z difference for placement calculation)
-        
-        # The EE will be at:
-        #   EE_x = Root_x + cos(yaw)*side_offset - sin(yaw)*forward_reach
-        #   EE_y = Root_y + sin(yaw)*side_offset + cos(yaw)*forward_reach
-        
-        # For EE to be at distance ee_to_fruit_dist from fruit, approaching from approach_angle:
         # Target EE position (on the line from fruit in approach direction):
-        target_ee_x = fruit_pos[0] + ee_to_fruit_dist * np.cos(approach_angle)
-        target_ee_y = fruit_pos[1] + ee_to_fruit_dist * np.sin(approach_angle)
-        
+        target_ee_x = initial_fruit_x + ee_to_fruit_dist * np.cos(approach_angle)
+        target_ee_y = initial_fruit_y + ee_to_fruit_dist * np.sin(approach_angle)
+
         # Solve for root position:
-        # Root_x = target_ee_x - cos(yaw)*side_offset + sin(yaw)*forward_reach
-        # Root_y = target_ee_y - sin(yaw)*side_offset - cos(yaw)*forward_reach
         cos_yaw = np.cos(yaw)
         sin_yaw = np.sin(yaw)
         
@@ -445,6 +419,98 @@ class RandomizationManager:
         robot_y = target_ee_y - sin_yaw * side_offset - cos_yaw * forward_reach
         robot_z = 0.0  # Base on ground
         
+        # ========================================
+        # 4. Randomize Plants (normal distribution, no robot avoidance)
+        # ========================================
+        self.randomize_plants()
+
+        # ========================================
+        # 5. Generate Fruit on Random Stem
+        # ========================================
+        stem_idx = np.random.randint(0, 5)
+        stem_name = f"plant_stem_{stem_idx}"
+        stem_body_id = mujoco.mj_name2id(
+            self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, stem_name
+        )
+
+        if stem_body_id != -1:
+            mocap_id = self.env.Dcmm.model.body_mocapid[stem_body_id]
+            if mocap_id != -1:
+                stem_pos = self.env.Dcmm.data.mocap_pos[mocap_id].copy()
+            else:
+                stem_pos = np.array([initial_fruit_x, initial_fruit_y, 0.0])
+        else:
+            stem_pos = np.array([initial_fruit_x, initial_fruit_y, 0.0])
+
+        # Fruit position (slight offset from stem)
+        offset_x = np.random.uniform(-0.05, 0.05)
+        offset_y = np.random.uniform(-0.05, 0.05)
+        fruit_pos = np.array([
+            stem_pos[0] + offset_x,
+            stem_pos[1] + offset_y,
+            fruit_height
+        ])
+
+        self.env.object_pos3d = fruit_pos
+        self.env.object_vel6d = np.zeros(6)
+        self.env.object_q = np.array([1.0, 0.0, 0.0, 0.0])
+
+        # ========================================
+        # 6. Recalculate Robot Position Based on Actual Fruit Position
+        # ========================================
+        # Recalculate robot position based on actual fruit position
+        target_ee_x = fruit_pos[0] + ee_to_fruit_dist * np.cos(approach_angle)
+        target_ee_y = fruit_pos[1] + ee_to_fruit_dist * np.sin(approach_angle)
+
+        robot_x = target_ee_x - cos_yaw * side_offset + sin_yaw * forward_reach
+        robot_y = target_ee_y - sin_yaw * side_offset - cos_yaw * forward_reach
+        robot_z = 0.0
+
+        # ========================================
+        # 7. Adjust Robot Position to Avoid Stem Collision
+        # ========================================
+        # [Fix 2025-12-09] Check if robot collides with any stem, if so, nudge it
+        # Strategy: iteratively push robot away from ALL nearby stems
+        min_robot_stem_dist = 0.45  # Robot base radius ~0.3m, add margin
+
+        for nudge_attempt in range(20):  # Try up to 20 iterations
+            # Collect all nearby stems and compute combined push direction
+            push_x, push_y = 0.0, 0.0
+            has_collision = False
+
+            for i in range(8):
+                stem_name_check = f"plant_stem_{i}"
+                stem_body_id_check = mujoco.mj_name2id(
+                    self.env.Dcmm.model, mujoco.mjtObj.mjOBJ_BODY, stem_name_check
+                )
+                if stem_body_id_check != -1:
+                    mocap_id_check = self.env.Dcmm.model.body_mocapid[stem_body_id_check]
+                    if mocap_id_check != -1:
+                        stem_pos_check = self.env.Dcmm.data.mocap_pos[mocap_id_check][:2]
+                        dx = robot_x - stem_pos_check[0]
+                        dy = robot_y - stem_pos_check[1]
+                        dist = np.sqrt(dx**2 + dy**2)
+                        if dist < min_robot_stem_dist:
+                            # Compute push direction (away from stem)
+                            if dist > 1e-6:
+                                push_x += dx / dist * (min_robot_stem_dist - dist + 0.1)
+                                push_y += dy / dist * (min_robot_stem_dist - dist + 0.1)
+                            else:
+                                # If exactly on stem, push in random direction
+                                push_x += np.random.uniform(-0.2, 0.2)
+                                push_y += np.random.uniform(-0.2, 0.2)
+                            has_collision = True
+
+            if not has_collision:
+                break
+
+            # Apply combined push
+            robot_x += push_x
+            robot_y += push_y
+
+        # ========================================
+        # 8. Set Robot Pose
+        # ========================================
         # Set robot pose
         cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
         robot_quat = np.array([cy, 0, 0, sy])
@@ -454,7 +520,7 @@ class RandomizationManager:
         self.env.Dcmm.data.qpos[15:21] = pre_grasp_pose
         
         # ========================================
-        # 5. Visual Domain Randomization
+        # 7. Visual Domain Randomization
         # ========================================
         self.apply_full_visual_dr()
         

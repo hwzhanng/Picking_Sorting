@@ -25,6 +25,8 @@ conda activate dcmm
 pip install -r requirements.txt
 pip install -e .
 ```
+python train_stage2.py test=True num_envs=1 viewer=True \
+    checkpoint_tracking="/home/cle/catch_it/outputs/Dcmm_Catch_optimizedseed44-3/2025-12-09/14:20:04/nn/best_reward_11.49.pth“   
 
 ---
 
