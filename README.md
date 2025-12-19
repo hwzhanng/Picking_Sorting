@@ -14,7 +14,7 @@
 |------|------|
 | **两阶段训练** | Stage 1 训练底盘+机械臂接近目标，Stage 2 训练灵巧手抓取 |
 | **AVP技术** | Asymmetric Value Propagation，使用 Stage 2 Critic 为 Stage 1 提供"可抓取性"奖励信号 |
-| **动态课程学习** | 0→2M步渐进式调整碰撞惩罚（-0.1→-2.0）和朝向精度要求（1.0→1.5次方） |
+| **动态课程学习** | 课程长度2M步，渐进式调整碰撞惩罚（-0.1→-2.0）和朝向精度要求（1.0→1.5次方） |
 | **关节空间控制** | 直接输出关节角度增量（Δθ），避免IK不稳定性 |
 | **域随机化** | 深度噪声、光照随机、地面纹理、物体形状/质量随机化 |
 | **视觉感知** | 84×84深度图输入，支持模拟RealSense D435i噪声 |
@@ -182,7 +182,7 @@ python train_stage1.py checkpoint_tracking="outputs/Dcmm/2025-12-19/nn/best_rewa
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `num_envs` | 32 | 并行环境数（建议不超过CPU核心数） |
+| `num_envs` | 32 | 并行环境数（建议8-16，根据CPU核心数调整） |
 | `seed` | -1 | 随机种子（-1=自动随机） |
 | `device_id` | 0 | GPU设备ID |
 | `avp_enabled` | True | AVP开关 |
@@ -199,7 +199,7 @@ python train_stage1.py checkpoint_tracking="outputs/Dcmm/2025-12-19/nn/best_rewa
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `num_envs` | 32 | 并行环境数 |
+| `num_envs` | 32 | 并行环境数（建议8-16，根据CPU核心数调整） |
 | `train.ppo.img_dim` | [224, 224] | 深度图尺寸 |
 | `train.ppo.action_catch_denorm` | [0.0, 0.025, 0.05] | 动作反归一化 [底盘, 手臂, 手部] |
 
@@ -507,7 +507,7 @@ class curriculum:
 
 ### Q: 训练速度太慢?
 **A**: 
-1. 增大 `num_envs`（建议不超过CPU核心数，最大18）
+1. 增大 `num_envs`（推荐8-16，不超过CPU核心数×2，代码限制最大为18以防止内存溢出）
 2. 确保使用GPU (`device_id=0`)
 3. 关闭WandB (`wandb_mode=disabled`)
 
