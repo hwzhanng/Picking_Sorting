@@ -74,9 +74,10 @@ class DepthCNN(nn.Module):
             # (B, H, W) -> (B, H, W, 1)
             x = x[..., None]
         
-        # Normalize to [0, 1] if needed (assuming 0-255 input)
-        x = x.astype(jnp.float32)
-        x = jnp.where(x.max() > 1.0, x / 255.0, x)
+        # Normalize to [0, 1] assuming 0-255 input
+        # Note: Using static division (faster than conditional)
+        # If your data is already normalized, you can skip this
+        x = x.astype(jnp.float32) / 255.0
         
         # Conv layers with ReLU
         x = nn.Conv(
@@ -428,18 +429,53 @@ def load_pytorch_checkpoint_to_flax(
 # JIT-compiled inference functions
 # ============================================
 
-@jax.jit
+# Note: For JIT compilation with model as argument, use functools.partial
+# to bind the model, or use model.apply directly inside a jitted function.
+
+def create_value_fn(model: ActorCriticFlax):
+    """Create a JIT-compiled value function for a specific model.
+    
+    Usage:
+        model = ActorCriticFlax(...)
+        get_value = create_value_fn(model)
+        value = get_value(params, obs)
+    """
+    @jax.jit
+    def get_value(params: Dict[str, Any], obs: jnp.ndarray) -> jnp.ndarray:
+        result = model.apply(params, obs, deterministic=True)
+        return result['value']
+    return get_value
+
+
+def create_action_fn(model: ActorCriticFlax):
+    """Create a JIT-compiled action function for a specific model.
+    
+    Usage:
+        model = ActorCriticFlax(...)
+        get_action = create_action_fn(model)
+        action = get_action(params, obs)
+    """
+    @jax.jit
+    def get_action(params: Dict[str, Any], obs: jnp.ndarray) -> jnp.ndarray:
+        result = model.apply(params, obs, deterministic=True)
+        return result['mu']
+    return get_action
+
+
+# Legacy functions (for backward compatibility)
+# Note: Passing model instance to JIT is inefficient - use create_*_fn instead
+
 def get_value_jit(
     params: Dict[str, Any],
     obs: jnp.ndarray,
     model: ActorCriticFlax
 ) -> jnp.ndarray:
-    """JIT-compiled value estimation.
+    """Value estimation (not JIT-compiled, use create_value_fn for JIT).
     
     Args:
         params: Flax parameters
         obs: Observation array
-        model: Model instance (static)
+        model: Model instance
         
     Returns:
         Value estimate
@@ -448,18 +484,17 @@ def get_value_jit(
     return result['value']
 
 
-@jax.jit
 def get_action_jit(
     params: Dict[str, Any],
     obs: jnp.ndarray,
     model: ActorCriticFlax
 ) -> jnp.ndarray:
-    """JIT-compiled deterministic action.
+    """Deterministic action (not JIT-compiled, use create_action_fn for JIT).
     
     Args:
         params: Flax parameters
         obs: Observation array
-        model: Model instance (static)
+        model: Model instance
         
     Returns:
         Action mean (deterministic)

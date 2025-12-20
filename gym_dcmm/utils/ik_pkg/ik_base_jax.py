@@ -103,6 +103,7 @@ def damper(value: float, min_val: float, max_val: float) -> float:
     return jnp.clip(value, min_val, max_val)
 
 
+@jax.jit
 def ik_base_pure(
     v_lin_x: float,
     v_lin_y: float,
@@ -111,7 +112,7 @@ def ik_base_pure(
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Calculate inverse kinematics for 4-wheel drive mobile base.
     
-    This is a pure function with explicit parameters.
+    This is a pure, JIT-compiled function with explicit parameters.
     
     Args:
         v_lin_x: Linear x velocity of mobile base (base_link frame)

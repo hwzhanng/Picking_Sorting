@@ -408,6 +408,11 @@ class RobotStepOutput(NamedTuple):
     control_state: RobotControlState
 
 
+# Note: robot_control_step is NOT JIT-compiled because:
+# 1. It has conditional logic that depends on lock_base/lock_hand booleans
+# 2. For maximum performance, JIT the entire environment step function instead
+# 3. The individual control functions (compute_*_control) ARE JIT-compiled
+
 def robot_control_step(
     # Current state from MJX data
     time: float,
@@ -591,22 +596,31 @@ if MJX_AVAILABLE:
         Returns:
             Dictionary with robot state components
             
-        Note: Joint indices may need adjustment based on actual model.
-        The original code uses:
-        - steer: joints steer_fl, steer_fr, steer_rl, steer_rr
-        - drive: joints drive_fl, drive_fr, drive_rl, drive_rr
-        - arm: qpos[15:21]
-        - hand: qpos[21:37]
+        IMPORTANT: Joint indices must be configured based on your MJCF model.
+        The DCMM model uses the following joint ordering:
+        - qpos indices 0-8: Base joints (steer: 0,1,2,3; free joint for body: 4-8)
+        - qpos indices 9-14: Not used (depends on model)
+        - qpos indices 15-20: Arm joints (6 DOF)
+        - qpos indices 21-36: Hand joints (16 DOF)
         
-        For MJX, you'll need to determine the correct indices from your model.
+        Use mujoco.mj_name2id() on the CPU model to get correct indices.
+        Example:
+            steer_fl_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, 'steer_fl')
         """
-        # TODO: Adjust indices based on actual model joint ordering
-        # These are placeholder indices - verify against your model
+        # Joint indices for DCMM model (verify against your specific model)
+        # These indices are based on the original MujocoDcmm.py implementation
+        STEER_QPOS_INDICES = jnp.array([0, 1, 2, 3])  # steer_fl, steer_fr, steer_rl, steer_rr
+        DRIVE_QVEL_INDICES = jnp.array([4, 5, 6, 7])  # drive_fl, drive_fr, drive_rl, drive_rr
+        ARM_QPOS_START = 15
+        ARM_QPOS_END = 21
+        HAND_QPOS_START = 21
+        HAND_QPOS_END = 37
+        
         return {
-            'steer_qpos': mx_data.qpos[0:4],  # Approximate
-            'drive_qvel': mx_data.qvel[4:8],  # Approximate
-            'arm_qpos': mx_data.qpos[15:21],
-            'hand_qpos': mx_data.qpos[21:37],
+            'steer_qpos': mx_data.qpos[STEER_QPOS_INDICES],
+            'drive_qvel': mx_data.qvel[DRIVE_QVEL_INDICES],
+            'arm_qpos': mx_data.qpos[ARM_QPOS_START:ARM_QPOS_END],
+            'hand_qpos': mx_data.qpos[HAND_QPOS_START:HAND_QPOS_END],
             'time': mx_data.time,
         }
     

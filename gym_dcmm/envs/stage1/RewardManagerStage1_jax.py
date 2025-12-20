@@ -576,6 +576,12 @@ class RewardOutput(NamedTuple):
     components: Dict[str, float]
 
 
+# Note: compute_reward_stage1 is intentionally NOT JIT-compiled because:
+# 1. It returns a Dict for components, which requires careful handling with JIT
+# 2. The individual component functions ARE JIT-compiled
+# 3. For maximum performance, users should JIT the outer environment step function
+#    which will compile this function along with the rest of the step logic
+
 def compute_reward_stage1(
     # Observations
     ee_pos_rel: jnp.ndarray,

@@ -162,9 +162,13 @@ def pid_step(
     return MV, new_state
 
 
-@jax.jit
 def pid_reset(dim: int, k: float = 1.0, params: PIDParams = None) -> Tuple[PIDState, PIDParams]:
     """Reset PID state and optionally scale parameters.
+    
+    Note: This function is NOT JIT-compiled because:
+    1. It creates new arrays with dynamic shape (dim)
+    2. It has conditional logic based on params being None
+    3. It's typically called once at reset, not in the inner loop
     
     Args:
         dim: Dimension of control signal

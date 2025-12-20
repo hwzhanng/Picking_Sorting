@@ -206,7 +206,7 @@ def rotation_matrix_to_quat(R: jnp.ndarray) -> jnp.ndarray:
 
 
 @jax.jit
-def quat_angle_axis(quat: jnp.ndarray) -> Tuple[float, jnp.ndarray]:
+def quat_angle_axis(quat: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Extract rotation angle and axis from quaternion.
     
     Args:
@@ -214,7 +214,7 @@ def quat_angle_axis(quat: jnp.ndarray) -> Tuple[float, jnp.ndarray]:
     
     Returns:
         Tuple of:
-            - angle: Rotation angle in radians (scalar)
+            - angle: Rotation angle in radians (JAX scalar array)
             - axis: Rotation axis (shape: [3])
     """
     # Normalize to ensure valid
