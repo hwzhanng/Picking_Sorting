@@ -71,6 +71,27 @@ class BodyIDMapping(NamedTuple):
     hand_body_ids: Tuple[int, ...]
 
 
+class SiteIDMapping(NamedTuple):
+    """Pre-computed site IDs for precise FK lookup.
+    
+    IMPORTANT: For grasping tasks, use Site positions instead of Body positions!
+    
+    In MuJoCo:
+    - Body position (xpos): Geometric center/centroid of the rigid body
+    - Site position (site_xpos): User-defined point, typically the GRASP POINT
+    
+    For example, the grasp point is usually defined as a Site located between
+    the gripper fingers, not at the wrist body center. Using body position
+    would cause the robot to miss the target by the wrist-to-fingertip offset.
+    
+    Attributes:
+        ee_site_id: End-effector site ID (e.g., 'grasp_site' or 'ee_site')
+        target_site_id: Target site ID (e.g., 'tomato_site')
+    """
+    ee_site_id: int
+    target_site_id: int
+
+
 def create_body_id_mapping(mj_model, body_names: Dict[str, Any] = None) -> BodyIDMapping:
     """Create body ID mapping from CPU MuJoCo model.
     
@@ -136,6 +157,65 @@ def create_body_id_mapping(mj_model, body_names: Dict[str, Any] = None) -> BodyI
         base_body_id=base_id,
         object_body_id=obj_id,
         hand_body_ids=hand_ids
+    )
+
+
+def create_site_id_mapping(mj_model, site_names: Dict[str, str] = None) -> SiteIDMapping:
+    """Create site ID mapping from CPU MuJoCo model.
+    
+    IMPORTANT: For grasping, use Sites instead of Bodies for accurate positioning!
+    
+    Sites are user-defined points in your MJCF (XML) file that mark precise
+    locations like the grasp point between gripper fingers.
+    
+    Args:
+        mj_model: CPU MuJoCo model (mujoco.MjModel)
+        site_names: Custom site name mapping:
+            {
+                'ee': 'grasp_site',      # End-effector grasp point site name
+                'target': 'tomato_site', # Target object site name
+            }
+            
+    Returns:
+        SiteIDMapping with pre-computed IDs
+        
+    Raises:
+        ValueError: If specified sites are not found in the model
+        
+    Example:
+        # In your MJCF file, define sites:
+        # <site name="grasp_site" pos="0 0 0.05" size="0.01"/>
+        
+        mj_model = mujoco.MjModel.from_xml_path('robot.xml')
+        site_ids = create_site_id_mapping(mj_model, {
+            'ee': 'grasp_site',
+            'target': 'tomato_site'
+        })
+        
+        # Use for precise distance computation
+        dist = compute_site_to_site_distance(mx_data, site_ids.ee_site_id, site_ids.target_site_id)
+    """
+    if site_names is None:
+        site_names = {
+            'ee': 'grasp_site',
+            'target': 'target_site',
+        }
+    
+    def get_site_id(name):
+        sid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, name)
+        if sid == -1:
+            raise ValueError(
+                f"Site '{name}' not found in model (ID=-1). "
+                f"Make sure to define <site name=\"{name}\" .../> in your MJCF file."
+            )
+        return sid
+    
+    ee_site_id = get_site_id(site_names.get('ee', 'grasp_site'))
+    target_site_id = get_site_id(site_names.get('target', 'target_site'))
+    
+    return SiteIDMapping(
+        ee_site_id=ee_site_id,
+        target_site_id=target_site_id
     )
 
 
@@ -628,35 +708,52 @@ def robot_control_step(
 # ============================================
 # Forward Kinematics (FK) for Reward Computation
 # ============================================
-
-# IMPORTANT: For reward computation, you need to know WHERE the end-effector is
-# in Cartesian space. MJX provides this via mx_data.xpos (body positions) and
-# mx_data.site_xpos (site positions after mj_forward/mj_step).
+#
+# IMPORTANT: Body vs Site - Choose the Right One!
+#
+# MuJoCo provides two ways to get positions:
+#
+# 1. BODY position (mx_data.xpos[body_id]):
+#    - Returns the geometric center/centroid of the rigid body
+#    - Example: For the wrist link, returns the center of the wrist bone
+#    - Use for: Base position, object center of mass
+#
+# 2. SITE position (mx_data.site_xpos[site_id]) - RECOMMENDED FOR GRASPING:
+#    - Returns a user-defined point specified in your MJCF file
+#    - Example: The grasp point between gripper fingers
+#    - Use for: End-effector target position, precise contact points
+#
+# WARNING: If you use body position for grasping rewards, the robot will
+# try to align its wrist center with the target, NOT its fingertips!
 #
 # Usage Pattern:
-#   After mjx.step(), the forward kinematics are automatically computed.
-#   Access end-effector position via:
-#     ee_pos = mx_data.xpos[ee_body_id]  # Body position
-#   or
-#     ee_pos = mx_data.site_xpos[ee_site_id]  # Site position (more precise)
+#   # Option A: Body-based (less precise)
+#   ee_pos = mx_data.xpos[body_id]
+#
+#   # Option B: Site-based (RECOMMENDED for grasping)
+#   ee_pos = mx_data.site_xpos[site_id]
 #
 # The body/site IDs must be pre-computed from the CPU model before JIT:
-#   ee_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
-#   ee_site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'ee_site')
+#   body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
+#   site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'grasp_site')
+
+# ============================================
+# Body-based FK (for base/object positions)
+# ============================================
 
 @jax.jit
 def get_ee_position(mx_data, ee_body_id: int) -> jnp.ndarray:
-    """Get end-effector position from MJX data.
+    """Get end-effector BODY position from MJX data.
     
-    Forward kinematics are automatically computed by mjx.step().
-    This function simply extracts the position for a given body.
+    WARNING: This returns the body center, NOT the grasp point!
+    For grasping, use get_site_position() instead.
     
     Args:
         mx_data: MJX data after physics step (FK already computed)
         ee_body_id: Body ID for end-effector (pre-computed from CPU model)
         
     Returns:
-        End-effector position in world frame (3,)
+        End-effector body center position in world frame (3,)
         
     Note: Body IDs are integers that must be obtained from the CPU model:
         ee_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
@@ -733,13 +830,127 @@ def compute_ee_to_target_distance(
     return jnp.linalg.norm(ee_pos - target_pos)
 
 
-# Batched versions for parallel environments
+# ============================================
+# Site-based FK (RECOMMENDED for Grasping)
+# ============================================
+#
+# IMPORTANT: For grasping tasks, use Site positions instead of Body positions!
+#
+# Why?
+# - Body position (mx_data.xpos): Returns the geometric center of the rigid body
+#   (e.g., the center of the wrist bone)
+# - Site position (mx_data.site_xpos): Returns a user-defined point
+#   (e.g., the grasp point between gripper fingers)
+#
+# If you use body position for grasping rewards, the robot will try to
+# put its wrist center on the target, not its fingertips!
+#
+# Usage:
+#   1. Define a <site> in your MJCF file at the grasp point:
+#      <site name="grasp_site" pos="0 0 0.05" size="0.01"/>
+#   2. Use create_site_id_mapping() to get the site ID
+#   3. Use get_site_position() for distance calculations
+
+@jax.jit
+def get_site_position(mx_data, site_id: int) -> jnp.ndarray:
+    """Get site position from MJX data.
+    
+    RECOMMENDED for grasping: Sites define precise points like the
+    grasp location between gripper fingers.
+    
+    Args:
+        mx_data: MJX data after physics step
+        site_id: Site ID (pre-computed from CPU model)
+        
+    Returns:
+        Site position in world frame (3,)
+        
+    Note: Site IDs must be obtained from the CPU model:
+        site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'grasp_site')
+    """
+    return mx_data.site_xpos[site_id]
+
+
+@jax.jit
+def get_site_orientation(mx_data, site_id: int) -> jnp.ndarray:
+    """Get site orientation (rotation matrix) from MJX data.
+    
+    Args:
+        mx_data: MJX data after physics step
+        site_id: Site ID
+        
+    Returns:
+        Site rotation matrix in world frame, flattened (9,)
+        Reshape to (3, 3) if needed: mat.reshape(3, 3)
+    """
+    return mx_data.site_xmat[site_id]
+
+
+@jax.jit
+def compute_site_to_site_distance(
+    mx_data,
+    ee_site_id: int,
+    target_site_id: int
+) -> jnp.ndarray:
+    """Compute distance between two sites.
+    
+    RECOMMENDED for grasping rewards: This gives the precise distance
+    from the grasp point to the target point.
+    
+    Args:
+        mx_data: MJX data after physics step
+        ee_site_id: End-effector site ID (e.g., grasp point)
+        target_site_id: Target site ID (e.g., tomato center)
+        
+    Returns:
+        Euclidean distance (scalar)
+    """
+    ee_pos = mx_data.site_xpos[ee_site_id]
+    target_pos = mx_data.site_xpos[target_site_id]
+    return jnp.linalg.norm(ee_pos - target_pos)
+
+
+@jax.jit
+def compute_site_to_body_distance(
+    mx_data,
+    site_id: int,
+    body_id: int
+) -> jnp.ndarray:
+    """Compute distance from a site to a body.
+    
+    Useful when the target is a body (e.g., object center) but the
+    end-effector reference is a site (e.g., grasp point).
+    
+    Args:
+        mx_data: MJX data after physics step
+        site_id: Site ID (e.g., grasp point)
+        body_id: Body ID (e.g., target object)
+        
+    Returns:
+        Euclidean distance (scalar)
+    """
+    site_pos = mx_data.site_xpos[site_id]
+    body_pos = mx_data.xpos[body_id]
+    return jnp.linalg.norm(site_pos - body_pos)
+
+
+# Batched versions for parallel environments (Body-based)
 get_ee_position_batched = jax.vmap(get_ee_position, in_axes=(0, None))
 get_ee_orientation_batched = jax.vmap(get_ee_orientation, in_axes=(0, None))
 get_ee_velocity_batched = jax.vmap(get_ee_velocity, in_axes=(0, None))
 get_object_position_batched = jax.vmap(get_object_position, in_axes=(0, None))
 compute_ee_to_target_distance_batched = jax.vmap(
     compute_ee_to_target_distance, in_axes=(0, None, None)
+)
+
+# Batched versions for parallel environments (Site-based) - RECOMMENDED for grasping
+get_site_position_batched = jax.vmap(get_site_position, in_axes=(0, None))
+get_site_orientation_batched = jax.vmap(get_site_orientation, in_axes=(0, None))
+compute_site_to_site_distance_batched = jax.vmap(
+    compute_site_to_site_distance, in_axes=(0, None, None)
+)
+compute_site_to_body_distance_batched = jax.vmap(
+    compute_site_to_body_distance, in_axes=(0, None, None)
 )
 
 
