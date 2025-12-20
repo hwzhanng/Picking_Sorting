@@ -1,6 +1,6 @@
 # Picking_Sorting: 基于AVP的两阶段农业采摘强化学习项目
 
-[![Python 3.8](https://img.shields.io/badge/python-3.8-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/)
 [![MuJoCo](https://img.shields.io/badge/MuJoCo-3.2.3+-green.svg)](https://mujoco.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4.1-red.svg)](https://pytorch.org/)
 
@@ -32,10 +32,10 @@
 
 ### 环境要求
 
-- Python 3.8
-- CUDA 11.8+ (推荐)
+- Python 3.10
+- CUDA 11.8+ (推荐12.3)
 - GPU: NVIDIA RTX 3080 或更高 (推荐)
-- 内存: 16GB+ RAM
+- 内存: 32GB+ RAM
 
 ### 安装步骤
 
@@ -45,7 +45,7 @@ git clone https://github.com/hwzhanng/Picking_Sorting.git
 cd Picking_Sorting
 
 # 2. 创建conda环境
-conda create -n picking python=3.8
+conda create -n picking python=3.10
 conda activate picking
 
 # 3. 安装PyTorch (根据CUDA版本选择)
