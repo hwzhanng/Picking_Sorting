@@ -1,324 +1,804 @@
 """
-Reward computation for DcmmVecEnvCatch.
-Handles all reward calculation logic for Stage 2 (Catch).
+JAX-compatible Reward Manager for Stage 2 (Catching Task).
+
+This module provides stateless, pure-functional reward computation
+for Stage 2 (grasp) training that can be JIT-compiled with JAX
+and vectorized with vmap for massively parallel environment execution.
+
+Features:
+- Stateless design with explicit state passing
+- Uses jax.numpy for GPU/TPU compatibility
+- Perturbation testing is stateless (state passed through)
+- All functions can be JIT-compiled
 """
 
-import numpy as np
-import configs.env.DcmmCfg as DcmmCfg
+import jax
+import jax.numpy as jnp
+from typing import NamedTuple, Dict, Tuple, Optional
+from functools import partial
+
 from gym_dcmm.utils.quat_utils import quat_rotate_vector
 
 
-class RewardManagerStage2:
-    """Manages reward computation for the environment (Stage 2 Catch)."""
+# ============================================
+# State and Configuration Containers
+# ============================================
 
-    def __init__(self, env):
-        """
-        Initialize reward manager.
-
-        Args:
-            env: Reference to the parent DcmmVecEnvCatch instance
-        """
-        self.env = env
-        self.prev_action_reward = None
-        
-        # Perturbation Test State
-        self.perturbation_active = False
-        self.initial_grasp_pos = None  # Object position when force threshold met
-        self.perturbation_timer = 0.0
-        self.perturbation_force_mag = 0.0
-        self.perturbation_direction = np.zeros(3)
-
-    def norm_ctrl(self, ctrl, components):
-        """
-        Convert the ctrl (dict type) to the numpy array and return its norm value.
-
-        Args:
-            ctrl: dict, control actions
-            components: list of component names to include
-
-        Returns:
-            float: norm value
-        """
-        ctrl_array = np.concatenate([ctrl[component]*DcmmCfg.reward_weights['r_ctrl'][component]
-                                    for component in components])
-        return np.linalg.norm(ctrl_array)
-
-    def apply_perturbation_force(self):
-        """
-        Apply random external force to the object to test grasp stability.
-        Simulates real-world disturbances (wind, pulling, etc.)
-        """
-        # Generate random force direction (uniformly on sphere)
-        theta = np.random.uniform(0, np.pi)
-        phi = np.random.uniform(0, 2*np.pi)
-        
-        self.perturbation_direction = np.array([
-            np.sin(theta) * np.cos(phi),
-            np.sin(theta) * np.sin(phi),
-            np.cos(theta)
-        ])
-        
-        # Random force magnitude (reduced for easier training)
-        self.perturbation_force_mag = np.random.uniform(0.5, 1.5)
-        
-        # Apply force to object via MuJoCo's external force array
-        # xfrc_applied is [force_x, force_y, force_z, torque_x, torque_y, torque_z]
-        object_body_id = self.env.Dcmm.data.body(self.env.object_name).id
-        force_vector = self.perturbation_direction * self.perturbation_force_mag
-        self.env.Dcmm.data.xfrc_applied[object_body_id, :3] = force_vector
-        
-    def compute_slippage(self):
-        """
-        Measure object displacement from initial grasp position.
-        Returns slippage distance in meters.
-        """
-        current_obj_pos = self.env.Dcmm.data.body(self.env.object_name).xpos
-        if self.initial_grasp_pos is None:
-            return 0.0
-        slippage = np.linalg.norm(current_obj_pos - self.initial_grasp_pos)
-        return slippage
+class RewardStateStage2(NamedTuple):
+    """State container for Stage 2 reward computation.
     
-    def evaluate_grasp_stability(self, total_contact_force):
-        """
-        Orchestrate perturbation test and return stability reward.
-        
-        Args:
-            total_contact_force: Sum of all touch sensor readings
-            
-        Returns:
-            float: Perturbation reward (+10.0 for stable, -5.0 for slip)
-        """
-        reward_perturbation = 0.0
-        dt = self.env.Dcmm.model.opt.timestep * self.env.steps_per_policy
-        
-        # State machine: Idle -> Testing -> Evaluate
-        if not self.perturbation_active:
-            # Check if conditions met to enter testing phase
-            if total_contact_force >= 1.0:
-                # Enter testing mode
-                self.perturbation_active = True
-                self.initial_grasp_pos = self.env.Dcmm.data.body(self.env.object_name).xpos.copy()
-                self.perturbation_timer = 0.0
-                # Apply initial perturbation force
-                self.apply_perturbation_force()
-        else:
-            # Testing phase: accumulate time and check slippage
-            self.perturbation_timer += dt
-            
-            # Continuously apply force during test window (0.5 seconds)
-            if self.perturbation_timer < 0.5:
-                # Refresh force application
-                object_body_id = self.env.Dcmm.data.body(self.env.object_name).id
-                force_vector = self.perturbation_direction * self.perturbation_force_mag
-                self.env.Dcmm.data.xfrc_applied[object_body_id, :3] = force_vector
-            else:
-                # Test complete: evaluate slippage
-                slippage = self.compute_slippage()
-                threshold = 0.01  # 1cm
-                
-                if slippage < threshold:
-                    # Success: Resisted perturbation
-                    reward_perturbation = 10.0
-                else:
-                    # Failure: Object slipped
-                    reward_perturbation = -5.0
-                
-                # Reset for next test
-                self.perturbation_active = False
-                self.initial_grasp_pos = None
-                # Clear external force
-                object_body_id = self.env.Dcmm.data.body(self.env.object_name).id
-                self.env.Dcmm.data.xfrc_applied[object_body_id, :] = 0.0
-                
-        return reward_perturbation
+    Attributes:
+        prev_action: Previous action for action rate penalty
+        perturbation_active: Whether perturbation test is ongoing
+        initial_grasp_pos: Object position when test started
+        perturbation_timer: Time elapsed in perturbation test
+        perturbation_force_dir: Direction of perturbation force
+        perturbation_force_mag: Magnitude of perturbation force
+        success_held_steps: Steps of successful grasp hold
+    """
+    prev_action: jnp.ndarray  # Shape: (20,)
+    perturbation_active: bool
+    initial_grasp_pos: jnp.ndarray  # Shape: (3,)
+    perturbation_timer: float
+    perturbation_force_dir: jnp.ndarray  # Shape: (3,)
+    perturbation_force_mag: float
+    success_held_steps: int
 
-    def compute_reward(self, obs, info, ctrl):
-        """
-        Compute total reward based on observations, info, and control.
 
-        [Fix 2025-12-19] Simplified reward structure for stable learning:
-        - Primary: Distance-based reaching reward (continuous, dense)
-        - Secondary: Grasp reward when close
-        - Penalties: Reduced magnitude, smoother curves
-
-        Args:
-            obs: Current observation dict
-            info: Current info dict
-            ctrl: Control action dict
-
-        Returns:
-            float: Total reward
-        """
-        ee_dist = info["ee_distance"]
-        
-        # 1. EE Reaching Reward: Continuous shaping (0.0 to 2.0)
-        # More gradual than tanh for better gradient signal
-        reward_reaching = 2.0 * np.exp(-2.0 * ee_dist)
-        
-        # 1b. Distance Milestone Bonuses (cumulative, smaller magnitude)
-        reward_distance_shaping = 0.0
-        if ee_dist < 0.30:
-            reward_distance_shaping += 0.5
-        if ee_dist < 0.15:
-            reward_distance_shaping += 1.0
-        if ee_dist < 0.08:
-            reward_distance_shaping += 1.5
-        if ee_dist < 0.05:
-            reward_distance_shaping += 2.0
-
-        # 2. Orientation Reward (only when close, gentler curve)
-        reward_orientation = 0.0
-        if ee_dist < 0.5:
-            ee_pos = self.env.Dcmm.data.body("link6").xpos
-            obj_pos = self.env.Dcmm.data.body(self.env.object_name).xpos
-            ee_to_obj = obj_pos - ee_pos
-            ee_to_obj_norm = ee_to_obj / (np.linalg.norm(ee_to_obj) + 1e-6)
-            ee_quat = self.env.Dcmm.data.body("link6").xquat
-            palm_forward = quat_rotate_vector(ee_quat, np.array([0, 0, -1]))
-            alignment = np.dot(palm_forward, ee_to_obj_norm)
-            # Gentler curve: linear instead of power
-            reward_orientation = max(0, alignment) * 1.0
-
-        # 3. Grasp Reward (Force Feedback) - Simplified
-        reward_grasp = 0.0
-        total_contact_force = np.sum(obs['touch'])
-        
-        if total_contact_force > 0.01:
-            # Any contact is good, with diminishing returns
-            fingers_touching = np.count_nonzero(obs['touch'] > 0.05)
-            # Base reward for contact + bonus for fingers
-            reward_grasp = 1.0 + 0.5 * fingers_touching
-            # Bonus for good force range (0.5N - 3.0N)
-            if 0.5 <= total_contact_force <= 3.0:
-                reward_grasp += 2.0
-            elif total_contact_force > 3.0:
-                # Slight penalty for excessive force
-                reward_grasp -= 0.5 * min(total_contact_force - 3.0, 2.0)
-        
-        # 4. Perturbation Test Reward (disabled during early training)
-        # Threshold defined in DcmmCfg.curriculum.phase1_steps
-        reward_perturbation = 0.0
-        perturbation_enable_step = getattr(DcmmCfg.curriculum, 'phase1_steps', 15e6) / 3  # Enable at 1/3 of Phase 1
-        if self.env.global_step > perturbation_enable_step:
-            reward_perturbation = self.evaluate_grasp_stability(total_contact_force)
-        
-        # 5. Impact Velocity Penalty (gentler curve)
-        reward_impact = 0.0
-        if total_contact_force > 0.01 or self.env.step_touch:
-            ee_vel_global = self.env.Dcmm.data.body("link6").cvel[3:6]
-            impact_speed = np.linalg.norm(ee_vel_global)
-            # Linear penalty above threshold, capped
-            if impact_speed > 0.3:
-                reward_impact = -min(2.0 * (impact_speed - 0.3), 3.0)
-
-        # 6. Regularization (reduced weight)
-        reward_regularization = -self.norm_ctrl(ctrl, ['arm', 'hand']) * 0.005
-
-        # 7. Collision Penalty (only on termination, reduced)
-        reward_collision = 0.0
-        if self.env.terminated and not info.get('is_success', False):
-            reward_collision = -2.0
-
-        # 8. Plant Collision Penalty (much reduced during early training)
-        reward_plant_collision = 0.0
-        # Use curriculum to gradually increase stem penalty
-        if self.env.contacts['plant_contacts'].size != 0:
-            # Start at -0.5, end at -5.0
-            reward_plant_collision += self.env.current_w_stem
-        if self.env.contacts['leaf_contacts'].size != 0:
-            # Very small leaf penalty
-            reward_plant_collision += -0.05
-
-        # 9. Action Rate Penalty (reduced)
-        current_action_vec = np.concatenate([ctrl['base'], ctrl['arm'], ctrl['hand']])
-        if self.prev_action_reward is None:
-            self.prev_action_reward = np.zeros_like(current_action_vec)
-        action_diff = current_action_vec - self.prev_action_reward
-        reward_action_rate = -np.linalg.norm(action_diff) * 0.02
-        self.prev_action_reward = current_action_vec.copy()
-        
-        # 10. Success Reward
-        reward_success = 0.0
-        if info.get('is_success', False):
-            reward_success = 20.0  # Reduced from 50 to balance with dense rewards
-
-        # Total reward (more balanced magnitudes)
-        rewards = (reward_reaching + reward_distance_shaping + reward_orientation +
-                  reward_grasp + reward_perturbation + reward_impact + 
-                  reward_regularization + reward_collision +
-                  reward_plant_collision + reward_action_rate + reward_success)
-
-        # Track reward components for WandB logging
-        if not hasattr(self, 'reward_stats'):
-            self._init_reward_stats()
-        self.reward_stats['reaching_sum'] += reward_reaching
-        self.reward_stats['distance_shaping_sum'] += reward_distance_shaping
-        self.reward_stats['orientation_sum'] += reward_orientation
-        self.reward_stats['grasp_sum'] += reward_grasp
-        self.reward_stats['perturbation_sum'] += reward_perturbation
-        self.reward_stats['impact_sum'] += reward_impact
-        self.reward_stats['collision_sum'] += reward_collision
-        self.reward_stats['success_sum'] += reward_success
-        self.reward_stats['contact_force_sum'] += total_contact_force
-        self.reward_stats['fingers_touching_sum'] += np.count_nonzero(obs['touch'] > 0.1)
-        self.reward_stats['count'] += 1
-
-        if self.env.print_reward:
-            print(f"reward_reaching: {reward_reaching:.3f}")
-            print(f"reward_orientation: {reward_orientation:.3f}")
-            print(f"reward_grasp: {reward_grasp:.3f} (Force: {total_contact_force:.2f}N)")
-            print(f"reward_perturbation: {reward_perturbation:.3f}")
-            print(f"reward_impact: {reward_impact:.3f}")
-            print(f"reward_regularization: {reward_regularization:.3f}")
-            print(f"reward_collision: {reward_collision:.3f}")
-            print(f"reward_plant_collision: {reward_plant_collision:.3f}")
-            print(f"reward_success: {reward_success:.3f}")
-            print(f"total reward: {rewards:.3f}\n")
-
-        return rewards
-
-    def _init_reward_stats(self):
-        """Initialize reward statistics for WandB logging."""
-        self.reward_stats = {
-            'reaching_sum': 0.0,
-            'distance_shaping_sum': 0.0,
-            'orientation_sum': 0.0,
-            'grasp_sum': 0.0,
-            'perturbation_sum': 0.0,
-            'impact_sum': 0.0,
-            'collision_sum': 0.0,
-            'success_sum': 0.0,
-            'contact_force_sum': 0.0,
-            'fingers_touching_sum': 0,
-            'count': 0,
-        }
+class RewardConfigStage2(NamedTuple):
+    """Configuration for Stage 2 reward weights.
     
-    def get_reward_stats_and_reset(self):
-        """
-        Get reward statistics for WandB logging and reset counters.
-        
-        Returns:
-            dict: Reward component averages
-        """
-        if not hasattr(self, 'reward_stats') or self.reward_stats['count'] == 0:
-            return None
-        
-        count = self.reward_stats['count']
-        stats = {
-            'rewards/reaching_mean': self.reward_stats['reaching_sum'] / count,
-            'rewards/distance_shaping_mean': self.reward_stats['distance_shaping_sum'] / count,
-            'rewards/orientation_mean': self.reward_stats['orientation_sum'] / count,
-            'rewards/grasp_mean': self.reward_stats['grasp_sum'] / count,
-            'rewards/perturbation_mean': self.reward_stats['perturbation_sum'] / count,
-            'rewards/impact_mean': self.reward_stats['impact_sum'] / count,
-            'rewards/collision_mean': self.reward_stats['collision_sum'] / count,
-            'rewards/success_mean': self.reward_stats['success_sum'] / count,
-            'grasp/contact_force_mean': self.reward_stats['contact_force_sum'] / count,
-            'grasp/fingers_touching_mean': self.reward_stats['fingers_touching_sum'] / count,
-        }
-        
-        # Reset counters
-        self._init_reward_stats()
-        
-        return stats
+    All weights are configurable to match DcmmCfg settings.
+    """
+    # Reaching rewards
+    w_reaching: float = 2.0
+    
+    # Distance milestones
+    milestone_distances: Tuple[float, ...] = (0.30, 0.15, 0.08, 0.05)
+    milestone_rewards: Tuple[float, ...] = (0.5, 1.0, 1.5, 2.0)
+    
+    # Orientation
+    orientation_dist_thresh: float = 0.5
+    w_orientation: float = 1.0
+    
+    # Grasp
+    w_grasp_base: float = 1.0
+    w_grasp_per_finger: float = 0.5
+    w_grasp_force_bonus: float = 2.0
+    force_range_min: float = 0.5
+    force_range_max: float = 3.0
+    
+    # Perturbation
+    perturbation_test_duration: float = 0.5
+    perturbation_force_min: float = 0.5
+    perturbation_force_max: float = 1.5
+    perturbation_force_thresh: float = 1.0
+    perturbation_slip_thresh: float = 0.01
+    w_perturbation_success: float = 10.0
+    w_perturbation_fail: float = -5.0
+    
+    # Penalties
+    w_impact: float = -2.0
+    impact_speed_thresh: float = 0.3
+    w_regularization: float = 0.005
+    w_collision: float = -2.0
+    w_action_rate: float = 0.02
+    
+    # Plant collision (curriculum-adjusted)
+    w_stem: float = -0.5
+    w_leaf: float = -0.05
+    
+    # Success
+    w_success: float = 20.0
+    success_hold_steps: int = 50  # ~1 second at 50Hz
 
+
+class CurriculumStateStage2(NamedTuple):
+    """Curriculum state for Stage 2.
+    
+    Attributes:
+        global_step: Current training step
+        phase: Training phase (1 or 2)
+        difficulty: Current difficulty [0, 1]
+        w_stem: Current stem collision penalty
+        perturbation_enabled: Whether perturbation test is active
+    """
+    global_step: int
+    phase: int
+    difficulty: float
+    w_stem: float
+    perturbation_enabled: bool
+
+
+# ============================================
+# Initialization Functions
+# ============================================
+
+def create_reward_state_stage2() -> RewardStateStage2:
+    """Create initial Stage 2 reward state."""
+    return RewardStateStage2(
+        prev_action=jnp.zeros(20),
+        perturbation_active=False,
+        initial_grasp_pos=jnp.zeros(3),
+        perturbation_timer=0.0,
+        perturbation_force_dir=jnp.array([1.0, 0.0, 0.0]),
+        perturbation_force_mag=0.0,
+        success_held_steps=0
+    )
+
+
+def create_reward_config_stage2() -> RewardConfigStage2:
+    """Create default Stage 2 reward configuration."""
+    return RewardConfigStage2()
+
+
+def create_curriculum_state_stage2(
+    collision_stem_start: float = -0.5
+) -> CurriculumStateStage2:
+    """Create initial Stage 2 curriculum state."""
+    return CurriculumStateStage2(
+        global_step=0,
+        phase=1,
+        difficulty=0.0,
+        w_stem=collision_stem_start,
+        perturbation_enabled=False
+    )
+
+
+# ============================================
+# Core Reward Components (Pure Functions)
+# ============================================
+
+@jax.jit
+def compute_reaching_reward_stage2(
+    ee_distance: float,
+    weight: float = 2.0
+) -> float:
+    """Compute EE reaching reward with exponential decay.
+    
+    Args:
+        ee_distance: Distance from EE to target
+        weight: Reward weight
+        
+    Returns:
+        Reaching reward
+    """
+    return weight * jnp.exp(-2.0 * ee_distance)
+
+
+@jax.jit
+def compute_distance_milestone_reward(
+    ee_distance: float,
+    distances: Tuple[float, ...] = (0.30, 0.15, 0.08, 0.05),
+    rewards: Tuple[float, ...] = (0.5, 1.0, 1.5, 2.0)
+) -> float:
+    """Compute cumulative distance milestone bonuses.
+    
+    Args:
+        ee_distance: Current EE-to-target distance
+        distances: Distance thresholds (descending)
+        rewards: Rewards for each threshold
+        
+    Returns:
+        Cumulative milestone reward
+    """
+    total = 0.0
+    for dist, rew in zip(distances, rewards):
+        total += jax.lax.cond(
+            ee_distance < dist,
+            lambda _: rew,
+            lambda _: 0.0,
+            operand=None
+        )
+    return total
+
+
+@jax.jit
+def compute_orientation_reward_stage2(
+    ee_pos: jnp.ndarray,
+    obj_pos: jnp.ndarray,
+    ee_quat: jnp.ndarray,
+    ee_distance: float,
+    dist_thresh: float = 0.5,
+    weight: float = 1.0
+) -> float:
+    """Compute orientation reward for Stage 2.
+    
+    Only computed when close to target.
+    Uses linear alignment (gentler than Stage 1).
+    
+    Args:
+        ee_pos: End-effector world position (3,)
+        obj_pos: Object world position (3,)
+        ee_quat: EE quaternion [w,x,y,z] (4,)
+        ee_distance: Current distance
+        dist_thresh: Distance threshold for orientation reward
+        weight: Reward weight
+        
+    Returns:
+        Orientation reward
+    """
+    def compute_orient(_):
+        ee_to_obj = obj_pos - ee_pos
+        ee_to_obj_norm = ee_to_obj / (jnp.linalg.norm(ee_to_obj) + 1e-6)
+        palm_forward = quat_rotate_vector(ee_quat, jnp.array([0.0, 0.0, -1.0]))
+        alignment = jnp.dot(palm_forward, ee_to_obj_norm)
+        return jnp.maximum(0.0, alignment) * weight
+    
+    return jax.lax.cond(
+        ee_distance < dist_thresh,
+        compute_orient,
+        lambda _: 0.0,
+        operand=None
+    )
+
+
+@jax.jit
+def compute_grasp_reward(
+    touch_sensors: jnp.ndarray,
+    config: RewardConfigStage2
+) -> Tuple[float, int, float]:
+    """Compute grasp reward based on touch feedback.
+    
+    Args:
+        touch_sensors: Touch sensor readings (4,) for fingertips
+        config: Reward configuration
+        
+    Returns:
+        Tuple of (reward, fingers_touching, total_force)
+    """
+    total_force = jnp.sum(touch_sensors)
+    fingers_touching = jnp.sum(touch_sensors > 0.05)
+    
+    def has_contact(_):
+        # Base reward for any contact
+        base = config.w_grasp_base
+        # Bonus per finger
+        finger_bonus = config.w_grasp_per_finger * fingers_touching
+        # Bonus for good force range
+        force_bonus = jax.lax.cond(
+            (total_force >= config.force_range_min) & (total_force <= config.force_range_max),
+            lambda _: config.w_grasp_force_bonus,
+            lambda _: jax.lax.cond(
+                total_force > config.force_range_max,
+                lambda _: -0.5 * jnp.minimum(total_force - config.force_range_max, 2.0),
+                lambda _: 0.0,
+                operand=None
+            ),
+            operand=None
+        )
+        return base + finger_bonus + force_bonus
+    
+    reward = jax.lax.cond(
+        total_force > 0.01,
+        has_contact,
+        lambda _: 0.0,
+        operand=None
+    )
+    
+    return reward, fingers_touching, total_force
+
+
+@jax.jit
+def compute_perturbation_reward(
+    state: RewardStateStage2,
+    obj_pos: jnp.ndarray,
+    total_contact_force: float,
+    dt: float,
+    rng_key: jax.random.PRNGKey,
+    config: RewardConfigStage2,
+    curriculum: CurriculumStateStage2
+) -> Tuple[float, RewardStateStage2, jnp.ndarray]:
+    """Evaluate grasp stability under perturbation.
+    
+    State machine:
+    - Idle: Wait for sufficient contact force
+    - Testing: Apply force and measure slippage
+    - Evaluate: Return reward based on slippage
+    
+    Args:
+        state: Current perturbation state
+        obj_pos: Current object position (3,)
+        total_contact_force: Sum of touch sensors
+        dt: Time step
+        rng_key: PRNG key for force randomization
+        config: Reward configuration
+        curriculum: Curriculum state (for enabling)
+        
+    Returns:
+        Tuple of (reward, new_state, force_to_apply)
+    """
+    # Return early if perturbation not enabled
+    def disabled_path(_):
+        return 0.0, state, jnp.zeros(3)
+    
+    def enabled_path(_):
+        def idle_state(_):
+            # Check if should start perturbation test
+            def start_test(_):
+                # Generate random force direction
+                k1, k2 = jax.random.split(rng_key)
+                theta = jax.random.uniform(k1, minval=0, maxval=jnp.pi)
+                phi = jax.random.uniform(k2, minval=0, maxval=2*jnp.pi)
+                direction = jnp.array([
+                    jnp.sin(theta) * jnp.cos(phi),
+                    jnp.sin(theta) * jnp.sin(phi),
+                    jnp.cos(theta)
+                ])
+                magnitude = jax.random.uniform(
+                    rng_key,
+                    minval=config.perturbation_force_min,
+                    maxval=config.perturbation_force_max
+                )
+                new_state = RewardStateStage2(
+                    prev_action=state.prev_action,
+                    perturbation_active=True,
+                    initial_grasp_pos=obj_pos,
+                    perturbation_timer=0.0,
+                    perturbation_force_dir=direction,
+                    perturbation_force_mag=magnitude,
+                    success_held_steps=state.success_held_steps
+                )
+                force = direction * magnitude
+                return 0.0, new_state, force
+            
+            def stay_idle(_):
+                return 0.0, state, jnp.zeros(3)
+            
+            return jax.lax.cond(
+                total_contact_force >= config.perturbation_force_thresh,
+                start_test,
+                stay_idle,
+                operand=None
+            )
+        
+        def testing_state(_):
+            new_timer = state.perturbation_timer + dt
+            
+            def continue_test(_):
+                force = state.perturbation_force_dir * state.perturbation_force_mag
+                new_state = RewardStateStage2(
+                    prev_action=state.prev_action,
+                    perturbation_active=True,
+                    initial_grasp_pos=state.initial_grasp_pos,
+                    perturbation_timer=new_timer,
+                    perturbation_force_dir=state.perturbation_force_dir,
+                    perturbation_force_mag=state.perturbation_force_mag,
+                    success_held_steps=state.success_held_steps
+                )
+                return 0.0, new_state, force
+            
+            def evaluate_test(_):
+                # Compute slippage
+                slippage = jnp.linalg.norm(obj_pos - state.initial_grasp_pos)
+                reward = jax.lax.cond(
+                    slippage < config.perturbation_slip_thresh,
+                    lambda _: config.w_perturbation_success,
+                    lambda _: config.w_perturbation_fail,
+                    operand=None
+                )
+                # Reset state
+                new_state = RewardStateStage2(
+                    prev_action=state.prev_action,
+                    perturbation_active=False,
+                    initial_grasp_pos=jnp.zeros(3),
+                    perturbation_timer=0.0,
+                    perturbation_force_dir=jnp.array([1.0, 0.0, 0.0]),
+                    perturbation_force_mag=0.0,
+                    success_held_steps=state.success_held_steps
+                )
+                return reward, new_state, jnp.zeros(3)
+            
+            return jax.lax.cond(
+                new_timer < config.perturbation_test_duration,
+                continue_test,
+                evaluate_test,
+                operand=None
+            )
+        
+        return jax.lax.cond(
+            state.perturbation_active,
+            testing_state,
+            idle_state,
+            operand=None
+        )
+    
+    return jax.lax.cond(
+        curriculum.perturbation_enabled,
+        enabled_path,
+        disabled_path,
+        operand=None
+    )
+
+
+@jax.jit
+def compute_impact_penalty_stage2(
+    touch_sensors: jnp.ndarray,
+    step_touch: bool,
+    ee_velocity: jnp.ndarray,
+    config: RewardConfigStage2
+) -> float:
+    """Compute impact velocity penalty.
+    
+    Args:
+        touch_sensors: Touch sensor readings
+        step_touch: Whether contact occurred
+        ee_velocity: EE linear velocity (3,)
+        config: Reward configuration
+        
+    Returns:
+        Impact penalty (negative or zero)
+    """
+    total_force = jnp.sum(touch_sensors)
+    has_contact = (total_force > 0.01) | step_touch
+    impact_speed = jnp.linalg.norm(ee_velocity)
+    
+    def compute_penalty(_):
+        excess_speed = impact_speed - config.impact_speed_thresh
+        return jax.lax.cond(
+            excess_speed > 0,
+            lambda _: config.w_impact * jnp.minimum(excess_speed, 1.5),
+            lambda _: 0.0,
+            operand=None
+        )
+    
+    return jax.lax.cond(
+        has_contact,
+        compute_penalty,
+        lambda _: 0.0,
+        operand=None
+    )
+
+
+@jax.jit
+def compute_regularization_penalty_stage2(
+    arm_action: jnp.ndarray,
+    hand_action: jnp.ndarray,
+    weight: float = 0.005
+) -> float:
+    """Compute control regularization penalty.
+    
+    Args:
+        arm_action: Arm action (6,)
+        hand_action: Hand action (12,)
+        weight: Penalty scale
+        
+    Returns:
+        Negative penalty
+    """
+    ctrl_norm = jnp.linalg.norm(jnp.concatenate([arm_action, hand_action]))
+    return -ctrl_norm * weight
+
+
+@jax.jit
+def compute_plant_collision_penalty_stage2(
+    plant_contact: bool,
+    leaf_contact: bool,
+    w_stem: float = -0.5,
+    w_leaf: float = -0.05
+) -> float:
+    """Compute plant collision penalty for Stage 2.
+    
+    Args:
+        plant_contact: Whether stem contact occurred
+        leaf_contact: Whether leaf contact occurred
+        w_stem: Stem penalty (curriculum-adjusted)
+        w_leaf: Leaf penalty (small)
+        
+    Returns:
+        Total plant collision penalty
+    """
+    stem_pen = jax.lax.cond(plant_contact, lambda _: w_stem, lambda _: 0.0, operand=None)
+    leaf_pen = jax.lax.cond(leaf_contact, lambda _: w_leaf, lambda _: 0.0, operand=None)
+    return stem_pen + leaf_pen
+
+
+@jax.jit
+def compute_success_reward(
+    state: RewardStateStage2,
+    touch_sensors: jnp.ndarray,
+    config: RewardConfigStage2
+) -> Tuple[float, bool, RewardStateStage2]:
+    """Check for successful stable grasp.
+    
+    Success requires sustained multi-finger contact.
+    
+    Args:
+        state: Current reward state
+        touch_sensors: Touch sensor readings (4,)
+        config: Reward configuration
+        
+    Returns:
+        Tuple of (success_reward, is_success, new_state)
+    """
+    fingers_touching = jnp.sum(touch_sensors > 0.1)
+    good_grasp = fingers_touching >= 3
+    
+    def update_held(_):
+        new_held = state.success_held_steps + 1
+        is_success = new_held >= config.success_hold_steps
+        reward = jax.lax.cond(
+            is_success,
+            lambda _: config.w_success,
+            lambda _: 0.0,
+            operand=None
+        )
+        new_state = RewardStateStage2(
+            prev_action=state.prev_action,
+            perturbation_active=state.perturbation_active,
+            initial_grasp_pos=state.initial_grasp_pos,
+            perturbation_timer=state.perturbation_timer,
+            perturbation_force_dir=state.perturbation_force_dir,
+            perturbation_force_mag=state.perturbation_force_mag,
+            success_held_steps=new_held
+        )
+        return reward, is_success, new_state
+    
+    def reset_held(_):
+        new_state = RewardStateStage2(
+            prev_action=state.prev_action,
+            perturbation_active=state.perturbation_active,
+            initial_grasp_pos=state.initial_grasp_pos,
+            perturbation_timer=state.perturbation_timer,
+            perturbation_force_dir=state.perturbation_force_dir,
+            perturbation_force_mag=state.perturbation_force_mag,
+            success_held_steps=0
+        )
+        return 0.0, False, new_state
+    
+    return jax.lax.cond(
+        good_grasp,
+        update_held,
+        reset_held,
+        operand=None
+    )
+
+
+# ============================================
+# Curriculum Learning
+# ============================================
+
+@jax.jit
+def update_curriculum_stage2(
+    state: CurriculumStateStage2,
+    phase1_steps: float = 15e6,
+    phase2_steps: float = 10e6,
+    collision_stem_start: float = -0.5,
+    collision_stem_end: float = -5.0,
+    perturbation_enable_ratio: float = 0.33
+) -> CurriculumStateStage2:
+    """Update Stage 2 curriculum based on training progress.
+    
+    Args:
+        state: Current curriculum state
+        phase1_steps: Steps in Phase 1 (Actor + Critic)
+        phase2_steps: Steps in Phase 2 (Critic only)
+        collision_stem_start: Initial stem penalty
+        collision_stem_end: Final stem penalty
+        perturbation_enable_ratio: Ratio of phase1 to enable perturbation
+        
+    Returns:
+        Updated curriculum state
+    """
+    total_steps = phase1_steps + phase2_steps
+    
+    # Determine phase
+    phase = jax.lax.cond(
+        state.global_step < phase1_steps,
+        lambda _: 1,
+        lambda _: 2,
+        operand=None
+    )
+    
+    # Compute difficulty (0 to 1)
+    difficulty = jnp.clip(state.global_step / total_steps, 0.0, 1.0)
+    
+    # Stem penalty
+    w_stem = collision_stem_start + (collision_stem_end - collision_stem_start) * difficulty
+    
+    # Perturbation enabling
+    perturbation_enabled = state.global_step > (phase1_steps * perturbation_enable_ratio)
+    
+    return CurriculumStateStage2(
+        global_step=state.global_step,
+        phase=phase,
+        difficulty=difficulty,
+        w_stem=w_stem,
+        perturbation_enabled=perturbation_enabled
+    )
+
+
+# ============================================
+# Main Reward Computation Function
+# ============================================
+
+class RewardOutputStage2(NamedTuple):
+    """Output from Stage 2 reward computation.
+    
+    Attributes:
+        total_reward: Sum of all reward components
+        state: Updated reward state
+        perturbation_force: Force to apply to object
+        is_success: Whether task completed successfully
+        components: Dictionary of individual reward components
+    """
+    total_reward: float
+    state: RewardStateStage2
+    perturbation_force: jnp.ndarray
+    is_success: bool
+    components: Dict[str, float]
+
+
+# Note: compute_reward_stage2 is intentionally NOT JIT-compiled because:
+# 1. It returns a Dict for components, which requires careful handling with JIT
+# 2. The individual component functions ARE JIT-compiled
+# 3. For maximum performance, users should JIT the outer environment step function
+#    which will compile this function along with the rest of the step logic
+
+def compute_reward_stage2(
+    # Observations
+    ee_pos: jnp.ndarray,
+    obj_pos: jnp.ndarray,
+    ee_quat: jnp.ndarray,
+    ee_velocity: jnp.ndarray,
+    touch_sensors: jnp.ndarray,
+    ee_distance: float,
+    # Actions
+    base_action: jnp.ndarray,
+    arm_action: jnp.ndarray,
+    hand_action: jnp.ndarray,
+    # State flags
+    step_touch: bool,
+    terminated: bool,
+    plant_contact: bool,
+    leaf_contact: bool,
+    # State
+    reward_state: RewardStateStage2,
+    # Configuration
+    curriculum_state: CurriculumStateStage2,
+    config: RewardConfigStage2,
+    # Physics
+    dt: float,
+    rng_key: jax.random.PRNGKey,
+) -> RewardOutputStage2:
+    """Compute total reward for Stage 2 (Catching).
+    
+    Args:
+        ee_pos: EE world position (3,)
+        obj_pos: Object world position (3,)
+        ee_quat: EE quaternion [w,x,y,z] (4,)
+        ee_velocity: EE linear velocity (3,)
+        touch_sensors: Touch sensor readings (4,)
+        ee_distance: EE-to-target distance
+        base_action: Base action (2,) - should be locked to zero in Stage 2
+        arm_action: Arm action (6,)
+        hand_action: Hand action (12,)
+        step_touch: Whether touch occurred
+        terminated: Whether episode ended
+        plant_contact: Whether stem contact occurred
+        leaf_contact: Whether leaf contact occurred
+        reward_state: Previous reward state
+        curriculum_state: Current curriculum state
+        config: Reward configuration
+        dt: Physics timestep
+        rng_key: PRNG key for perturbation
+        
+    Returns:
+        RewardOutputStage2 with total reward, updated state, and components
+    """
+    # 1. Reaching reward
+    r_reaching = compute_reaching_reward_stage2(ee_distance, config.w_reaching)
+    
+    # 2. Distance milestones
+    r_milestones = compute_distance_milestone_reward(
+        ee_distance, config.milestone_distances, config.milestone_rewards
+    )
+    
+    # 3. Orientation reward
+    r_orientation = compute_orientation_reward_stage2(
+        ee_pos, obj_pos, ee_quat, ee_distance,
+        config.orientation_dist_thresh, config.w_orientation
+    )
+    
+    # 4. Grasp reward
+    r_grasp, fingers_touching, total_force = compute_grasp_reward(touch_sensors, config)
+    
+    # 5. Perturbation test
+    r_perturbation, perturb_state, perturb_force = compute_perturbation_reward(
+        reward_state, obj_pos, total_force, dt, rng_key, config, curriculum_state
+    )
+    
+    # 6. Impact penalty
+    r_impact = compute_impact_penalty_stage2(
+        touch_sensors, step_touch, ee_velocity, config
+    )
+    
+    # 7. Regularization
+    r_regularization = compute_regularization_penalty_stage2(
+        arm_action, hand_action, config.w_regularization
+    )
+    
+    # 8. Collision penalty
+    r_collision = jax.lax.cond(
+        terminated & ~step_touch,
+        lambda _: config.w_collision,
+        lambda _: 0.0,
+        operand=None
+    )
+    
+    # 9. Plant collision
+    r_plant = compute_plant_collision_penalty_stage2(
+        plant_contact, leaf_contact, curriculum_state.w_stem, config.w_leaf
+    )
+    
+    # 10. Action rate penalty
+    current_action = jnp.concatenate([base_action, arm_action, hand_action])
+    action_diff = current_action - reward_state.prev_action
+    r_action_rate = -jnp.linalg.norm(action_diff) * config.w_action_rate
+    
+    # 11. Success check
+    r_success, is_success, success_state = compute_success_reward(
+        perturb_state, touch_sensors, config
+    )
+    
+    # Total reward
+    total_reward = (
+        r_reaching + r_milestones + r_orientation + r_grasp +
+        r_perturbation + r_impact + r_regularization + r_collision +
+        r_plant + r_action_rate + r_success
+    )
+    
+    # Update state
+    new_state = RewardStateStage2(
+        prev_action=current_action,
+        perturbation_active=success_state.perturbation_active,
+        initial_grasp_pos=success_state.initial_grasp_pos,
+        perturbation_timer=success_state.perturbation_timer,
+        perturbation_force_dir=success_state.perturbation_force_dir,
+        perturbation_force_mag=success_state.perturbation_force_mag,
+        success_held_steps=success_state.success_held_steps
+    )
+    
+    # Collect components
+    components = {
+        'reaching': r_reaching,
+        'milestones': r_milestones,
+        'orientation': r_orientation,
+        'grasp': r_grasp,
+        'perturbation': r_perturbation,
+        'impact': r_impact,
+        'regularization': r_regularization,
+        'collision': r_collision,
+        'plant': r_plant,
+        'action_rate': r_action_rate,
+        'success': r_success,
+        'fingers_touching': fingers_touching,
+        'total_force': total_force,
+    }
+    
+    return RewardOutputStage2(
+        total_reward=total_reward,
+        state=new_state,
+        perturbation_force=perturb_force,
+        is_success=is_success,
+        components=components
+    )
+
+
+# ============================================
+# Batched Version for Vectorized Environments
+# ============================================
+
+# Note: For batched version, we need separate PRNG keys per environment
+compute_reward_stage2_batched = jax.vmap(
+    compute_reward_stage2,
+    in_axes=(
+        0, 0, 0, 0, 0, 0,  # Observations (batch)
+        0, 0, 0,  # Actions (batch)
+        0, 0, 0, 0,  # Flags (batch)
+        0,  # Reward state (batch)
+        None, None,  # Curriculum and config (shared)
+        None, 0,  # dt (shared), rng_keys (batch)
+    ),
+    out_axes=0
+)

@@ -316,7 +316,7 @@ def example_convert_stage2_model():
     and converting it to Flax for use in MJX environments.
     """
     import torch
-    from gym_dcmm.algs.ppo_dcmm.stage2.ModelsStage2_flax import (
+    from gym_dcmm.algs.ppo_dcmm.stage2.ModelsStage2 import (
         ActorCriticFlax,
         convert_pytorch_to_flax,
         RunningMeanStdFlax
@@ -402,27 +402,32 @@ def example_env_step_pattern():
 # ============================================
 
 MIGRATION_CHECKLIST = """
-JAX/MJX Migration Checklist
-===========================
+JAX/MJX GPU-Accelerated Branch
+==============================
 
-□ Core Utilities
-  ☑ PID Controller (pid_jax.py)
-  ☑ Quaternion Utils (quat_utils_jax.py)
-  ☑ IK Base (ik_base_jax.py)
+This is a dedicated GPU-accelerated branch using JAX/MJX.
+All modules have been converted to pure-functional JAX code.
 
-□ Neural Networks
-  ☑ Stage 2 ActorCritic (ModelsStage2_flax.py)
-  ☑ Weight Conversion Functions
-  ☑ RunningMeanStd JAX version
+✓ Core Utilities
+  ✓ PID Controller (pid.py)
+  ✓ Quaternion Utils (quat_utils.py)
+  ✓ IK Base (ik_base.py)
 
-□ Reward Functions
-  ☑ Stage 1 Reward Manager (RewardManagerStage1_jax.py)
-  ☑ Stage 2 Reward Manager (RewardManagerStage2_jax.py)
+✓ Neural Networks
+  ✓ Stage 2 ActorCritic (ModelsStage2.py) - Flax implementation
+  ✓ Weight Conversion Functions (PyTorch → Flax)
+  ✓ Numerical Verification Test
+  ✓ RunningMeanStd JAX version
 
-□ Robot Control
-  ☑ Robot Wrapper (MujocoDcmm_mjx.py)
-  ☑ Control State Containers
-  ☑ MJX Integration Functions
+✓ Reward Functions
+  ✓ Stage 1 Reward Manager (RewardManagerStage1.py)
+  ✓ Stage 2 Reward Manager (RewardManagerStage2.py)
+
+✓ Robot Control
+  ✓ Robot Wrapper (MujocoDcmm.py)
+  ✓ Forward Kinematics (FK) functions
+  ✓ Control State Containers
+  ✓ MJX Integration Functions
 
 □ TODO: Environment Classes
   ☐ DcmmVecEnvStage1 JAX version
