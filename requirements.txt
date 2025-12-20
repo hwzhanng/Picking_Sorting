@@ -2,11 +2,18 @@
 gymnasium==0.29.1
 mujoco>=3.2.3
 
-# Deep Learning & RL
+# Deep Learning & RL - PyTorch (for original implementation)
 torch==2.4.1
 torchvision==0.20.0
 torchaudio==2.4.1
 stable-baselines3==2.4.1
+
+# JAX/Flax for GPU-accelerated parallel simulation
+# Note: Install JAX with CUDA support for GPU: pip install "jax[cuda12]"
+jax>=0.4.20
+jaxlib>=0.4.20
+flax>=0.8.0
+optax>=0.1.7
 
 # Numerical Computing
 numpy==1.23.0
