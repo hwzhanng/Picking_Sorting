@@ -1,75 +1,94 @@
-name: dcmm
+name: picking_jax
 channels:
-  - pytorch
+  - conda-forge
   - nvidia
   - defaults
 dependencies:
-  # Python
-  - python=3.8.20
+  # Python - use 3.10 for JAX compatibility
+  - python=3.10
   
-  # Core System Libraries
-  - numpy=1.23.0
-  - pytorch=2.4.1
-  - torchvision=0.20.0
-  - torchaudio=2.4.1
-  - pytorch-cuda=12.1
-  - cudatoolkit
+  # Core numerical computing
+  - numpy>=1.23.0,<2.0.0
+  - scipy>=1.10.0
+  - pandas>=2.0.0
   
-  # CUDA Libraries
-  - cuda-cudart=12.1.105
-  - cuda-runtime=12.1.0
-  - cuda-libraries=12.1.0
-  - cuda-nvrtc=12.1.105
-  - cuda-nvtx=12.1.105
-  - cuda-cupti=12.1.105
+  # Visualization
+  - matplotlib>=3.7.0
+  - seaborn>=0.12.0
   
-  # Scientific Computing
-  - scipy
-  - pandas
-  - matplotlib
-  - seaborn
-  
-  # Build Tools
+  # Build tools
   - pip
   - setuptools
   - wheel
+  - cmake
+  
+  # OpenGL for visualization (optional - CPU MuJoCo viewer)
+  - pyopengl
+  - glfw
   
   # Pip dependencies
   - pip:
+    # ==================================
+    # JAX/Flax - GPU Accelerated ML
+    # ==================================
+    # Note: For GPU, install separately after conda:
+    # pip install --upgrade "jax[cuda12]"
+    # or for CPU only: pip install jax jaxlib
+    - jax>=0.4.20
+    - jaxlib>=0.4.20
+    - flax>=0.8.0
+    - optax>=0.1.7
+    - chex>=0.1.5
+    
+    # ==================================
+    # MuJoCo - Physics Simulation
+    # ==================================
+    # MJX (GPU) requires mujoco >= 3.0
+    - mujoco>=3.0.0
+    
+    # ==================================
     # Gym & RL
-    - gymnasium==0.29.1
-    - mujoco==3.2.3
-    - stable-baselines3==2.4.1
+    # ==================================
+    - gymnasium>=0.29.0
     
-    # Numerical & Math
-    - numpy-quaternion==2023.0.4
-    - spatialmath-python==1.1.15
-    - qpsolvers==4.8.1
-    - quadprog==0.1.12
+    # ==================================
+    # PyTorch - For weight conversion only
+    # ==================================
+    # Optional: Only needed if converting from PyTorch checkpoints
+    # - torch>=2.0.0
     
+    # ==================================
+    # Numerical & Robotics
+    # ==================================
+    - numpy-quaternion>=2023.0.0
+    - spatialmath-python>=1.1.0
+    
+    # ==================================
     # Computer Vision
-    - opencv-python==4.12.0.88
-    - imageio==2.35.1
+    # ==================================
+    - opencv-python>=4.8.0
+    - imageio>=2.30.0
     
-    # Visualization
-    - PyOpenGL==3.1.10
-    - glfw==2.10.0
+    # ==================================
+    # Configuration & Logging
+    # ==================================
+    - PyYAML>=6.0
+    - omegaconf>=2.3.0
+    - hydra-core>=1.3.0
+    - wandb>=0.15.0
+    - tensorboard>=2.14.0
+    - tensorboardX>=2.6.0
     
-    # Configuration
-    - PyYAML==6.0
-    - omegaconf==2.3.0
-    - hydra-core==1.3.2
-    
-    # Logging & Monitoring
-    - wandb==0.22.3
-    - tensorboard==2.14.0
-    - tensorboardX==2.6.2.2
-    
+    # ==================================
     # Utilities
-    - termcolor==2.4.0
-    - colored==1.4.4
-    - decorators==2.0.7
-    - ansitable==0.11.4
+    # ==================================
+    - termcolor>=2.3.0
+    - tqdm>=4.65.0
+    - rich>=13.0.0
     
-    # Local package (install in editable mode: pip install -e .)
-    # - -e .
+    # ==================================
+    # Development (optional)
+    # ==================================
+    # - pytest>=7.0.0
+    # - black>=23.0.0
+    # - ruff>=0.1.0

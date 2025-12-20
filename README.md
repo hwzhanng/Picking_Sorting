@@ -1,555 +1,380 @@
-# Picking_Sorting: 基于AVP的两阶段农业采摘强化学习项目
+# Picking_Sorting: JAX/MJX GPU-Accelerated RL Training
 
-[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/)
-[![MuJoCo](https://img.shields.io/badge/MuJoCo-3.2.3+-green.svg)](https://mujoco.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.4.1-red.svg)](https://pytorch.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-0.4.20+-orange.svg)](https://github.com/google/jax)
+[![MuJoCo MJX](https://img.shields.io/badge/MuJoCo_MJX-3.0+-green.svg)](https://mujoco.readthedocs.io/en/stable/mjx.html)
+[![Flax](https://img.shields.io/badge/Flax-0.8.0+-purple.svg)](https://github.com/google/flax)
 
-## 📋 项目概述
+## 📋 Overview
 
-**Picking_Sorting** 是一个基于深度强化学习的农业采摘机器人控制项目。该项目训练移动操作机器人（移动底盘 + 6自由度机械臂 + 16DOF灵巧手）在复杂农业场景中自主导航至目标果实并进行精确采摘。
+**Picking_Sorting** is a GPU-accelerated reinforcement learning framework for agricultural picking robots using **JAX/MJX** for massively parallel simulation.
 
-### 🎯 核心特性
+### 🚀 Key Features
 
-| 特性 | 描述 |
-|------|------|
-| **两阶段训练** | Stage 1 训练底盘+机械臂接近目标，Stage 2 训练灵巧手抓取 |
-| **AVP技术** | Asymmetric Value Propagation，使用 Stage 2 Critic 为 Stage 1 提供"可抓取性"奖励信号 |
-| **动态课程学习** | 课程长度2M步，渐进式调整碰撞惩罚（-0.1→-2.0）和朝向精度要求（1.0→1.5次方） |
-| **关节空间控制** | 直接输出关节角度增量（Δθ），避免IK不稳定性 |
-| **域随机化** | 深度噪声、光照随机、地面纹理、物体形状/质量随机化 |
-| **视觉感知** | 84×84深度图输入，支持模拟RealSense D435i噪声 |
+| Feature | Description |
+|---------|-------------|
+| **GPU Parallel Simulation** | 1000+ environments on single GPU via MuJoCo MJX |
+| **Pure JAX Implementation** | All components JIT-compiled for maximum performance |
+| **Two-Stage Training** | Stage 1: Navigation + Arm, Stage 2: Grasping |
+| **AVP Technology** | Asymmetric Value Propagation for coordinated learning |
+| **Site-based FK** | Precise grasp point tracking (not body center) |
 
-### 🤖 机器人平台
+### 🤖 Robot Platform
 
-- **移动底盘**: Ranger Mini V2 双阿克曼转向底盘
-- **机械臂**: xArm6 6自由度机械臂
-- **灵巧手**: LEAP Hand 16关节灵巧手（12个可控自由度）
-- **传感器**: 腕部深度相机、手指触觉传感器（4个）
+- **Mobile Base**: Ranger Mini V2 (4-wheel steering)
+- **Arm**: xArm6 6-DOF manipulator  
+- **Hand**: LEAP Hand 16-joint dexterous hand
+- **Sensors**: Wrist depth camera, tactile sensors
 
 ---
 
-## 🚀 快速开始
+## 🛠️ Installation
 
-### 环境要求
-
-- Python 3.10
-- CUDA 11.8+ (推荐12.3)
-- GPU: NVIDIA RTX 3080 或更高 (推荐)
-- 内存: 32GB+ RAM
-
-### 安装步骤
+### Option 1: pip (Recommended for Cloud)
 
 ```bash
-# 1. 克隆仓库
+# 1. Clone repository
 git clone https://github.com/hwzhanng/Picking_Sorting.git
 cd Picking_Sorting
 
-# 2. 创建conda环境
-conda create -n picking python=3.10
-conda activate picking
+# 2. Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
 
-# 3. 安装PyTorch (根据CUDA版本选择)
-pip install torch==2.4.1 torchvision==0.20.0 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu118
+# 3. Install JAX with CUDA support
+# For CUDA 12.x:
+pip install --upgrade "jax[cuda12]"
+# For CUDA 11.x:
+pip install --upgrade "jax[cuda11_local]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
-# 4. 安装项目依赖
+# 4. Install dependencies
 pip install -r requirements.txt
 
-# 5. 安装项目包
+# 5. Install package
 pip install -e .
 ```
 
-### 验证安装
+### Option 2: Conda
 
 ```bash
-# 测试环境是否正常
-python test_env.py
+# 1. Clone repository
+git clone https://github.com/hwzhanng/Picking_Sorting.git
+cd Picking_Sorting
 
-# 查看MuJoCo渲染
-python train_stage1.py test=True num_envs=1 viewer=True
+# 2. Create environment from yaml
+conda env create -f environment.yml
+conda activate picking_jax
+
+# 3. Install JAX with CUDA (conda doesn't have official JAX packages)
+pip install --upgrade "jax[cuda12]"
+
+# 4. Install package
+pip install -e .
+```
+
+### Option 3: Docker (Cloud/Server)
+
+```bash
+# Pull NVIDIA JAX container
+docker pull nvcr.io/nvidia/jax:latest
+
+# Run with GPU access
+docker run --gpus all -it -v $(pwd):/workspace nvcr.io/nvidia/jax:latest
+
+# Inside container:
+cd /workspace
+pip install -r requirements.txt
+pip install -e .
+```
+
+### Verify Installation
+
+```bash
+# Test JAX GPU detection
+python -c "import jax; print(f'JAX devices: {jax.devices()}')"
+
+# Test MJX
+python -c "import mujoco.mjx as mjx; print('MJX available')"
+
+# Test environment
+python test_env_jax.py
 ```
 
 ---
 
-## 📊 输入输出维度规格
+## 🏃 Quick Start
 
-### Stage 1 (Tracking - 底盘+机械臂接近)
+### Training Stage 2 (Grasp) → Stage 1 (Navigation)
 
-| 类型 | 维度 | 组成 |
-|------|------|------|
-| **观测 (State)** | 15 | 底盘速度(2) + 末端位置(3) + 末端四元数(4) + 末端速度(3) + 目标位置(3) |
-| **观测 (Depth)** | 84×84 | 深度图像，单通道，归一化至0-255 |
-| **动作** | 8 | 底盘速度(2) + 机械臂关节增量(6) |
-
-**动作范围:**
-- 底盘: [-4, 4] m/s (线速度)
-- 机械臂: [-0.05, 0.05] rad/step (关节增量)
-
-### Stage 2 (Catching - 灵巧手抓取)
-
-| 类型 | 维度 | 组成 |
-|------|------|------|
-| **观测 (State)** | 35 | 末端位置(3) + 末端四元数(4) + 末端速度(3) + 机械臂关节(6) + 目标位置(3) + 手部关节(12) + 触觉(4) |
-| **观测 (Depth)** | 84×84 | 深度图像，单通道，归一化至0-255 |
-| **动作** | 20 | 底盘(2, 锁定为0) + 机械臂关节增量(6) + 手部关节增量(12) |
-
-**动作范围:**
-- 底盘: 锁定为0 (Stage 2不控制底盘)
-- 机械臂: [-0.025, 0.025] rad/step (关节增量)
-- 手部: [-0.05, 0.05] rad/step (关节增量)
-
----
-
-## 🎯 奖励函数详解
-
-### Stage 1 奖励函数 (`RewardManagerStage1.py`)
-
-| 奖励分量 | 公式 | 权重 | 说明 |
-|----------|------|------|------|
-| **手臂到达** | `2.0 × (1 - tanh(3d_arm))` | 2.0 | 机械臂末端到目标距离（基座坐标系） |
-| **全局到达** | `0.5 × (1 - tanh(2d_ee))` | 0.5 | 末端到目标全局距离 |
-| **底盘定位** | `exp(-5(d_base - 0.8)²)` | 1.0 | 鼓励底盘保持0.8m最优距离 |
-| **手臂运动** | `0.5 × tanh(3 × joint_dev)` | 0.5 | 奖励手臂关节偏离初始位置 |
-| **手臂动作** | `0.2 × ‖action_arm‖` | 0.2 | 奖励使用手臂控制 |
-| **朝向对齐** | `max(0, align)^power × 2` | 动态 | 掌心朝向目标（power: 1.0→1.5） |
-| **接触奖励** | `10 - 4 × impact_speed` | 10.0 | 轻触目标，惩罚高速撞击 |
-| **树干碰撞** | `curriculum_penalty` | -0.1→-2.0 | 课程学习渐进惩罚 |
-| **树叶碰撞** | `-0.5 × (1 + velocity)` | -0.5 | 速度相关轻微惩罚 |
-| **动作平滑** | `-0.02 × ‖Δaction‖` | -0.02 | 惩罚动作剧烈变化 |
-| **控制正则** | `-0.005 × ‖base‖ - 0.001 × ‖arm‖` | 动态 | 底盘惩罚大于手臂 |
-| **AVP奖励** | `λ × Critic(virtual_obs)` | 0.2→0.8 | Stage 2 Critic值估计 |
-
-### Stage 2 奖励函数 (`RewardManagerStage2.py`)
-
-| 奖励分量 | 公式 | 权重 | 说明 |
-|----------|------|------|------|
-| **到达奖励** | `2.0 × exp(-2d_ee)` | 2.0 | 末端到目标指数衰减 |
-| **距离里程碑** | `+0.5/+1.0/+1.5/+2.0` | 累加 | d<0.3m/0.15m/0.08m/0.05m |
-| **朝向奖励** | `max(0, align) × 1.0` | 1.0 | 仅d<0.5m时计算 |
-| **抓取奖励** | `1.0 + 0.5×fingers + bonus` | 动态 | 接触数量+力范围bonus |
-| **扰动测试** | `±10.0 / -5.0` | ±10.0 | 抵抗0.5-1.5N随机扰动 |
-| **冲击惩罚** | `-min(2(v-0.3), 3)` | -3.0 | v>0.3m/s时惩罚 |
-| **成功奖励** | `+20.0` | 20.0 | 稳定抓取1秒 |
-| **碰撞惩罚** | `-2.0` | -2.0 | 非成功终止 |
-| **植物碰撞** | `curriculum_penalty` | 动态 | 茎秆>叶片 |
-
----
-
-## 🎓 训练指南
-
-> ⚠️ **重要**: 正确的训练顺序是 **先训练 Stage 2，再训练 Stage 1**。Stage 1 会加载预训练的 Stage 2 Critic 进行 AVP 奖励计算。
-
-### Step 1: Stage 2 训练 (灵巧手抓取)
-
-**独立训练**灵巧手在近距离完成抓取任务，训练完成后导出 Critic 用于 AVP。
+> ⚠️ **Important**: Train Stage 2 first, then Stage 1 uses its Critic for AVP rewards.
 
 ```bash
-# 基础训练 (推荐配置)
-python train_stage2.py num_envs=8 device_id=0
+# Step 1: Train Stage 2 (Grasping)
+python train_stage2_jax.py \
+    --num_envs 1024 \
+    --total_timesteps 10_000_000 \
+    --seed 42
 
-# 使用更多并行环境加速 (需要更大显存)
-python train_stage2.py num_envs=16 device_id=0
+# Step 2: Export Stage 2 Critic for AVP
+cp outputs/stage2_best.pkl assets/checkpoints/avp/stage2_critic.pkl
 
-# 从检查点恢复训练
-python train_stage2.py checkpoint_catching="outputs/Dcmm_Catch/2025-12-19/nn/best_reward_XXX.pth"
-
-# 指定随机种子进行可复现训练
-python train_stage2.py seed=42 output_name=Dcmm_Catch_seed42
+# Step 3: Train Stage 1 (Navigation + Arm)
+python train_stage1_jax.py \
+    --num_envs 1024 \
+    --total_timesteps 25_000_000 \
+    --avp_checkpoint assets/checkpoints/avp/stage2_critic.pkl \
+    --seed 42
 ```
 
-**训练完成后**，复制最佳模型到 AVP 目录：
-```bash
-cp outputs/Dcmm_Catch/.../nn/best_reward_XXX.pth assets/checkpoints/avp/stage2_critic.pth
-```
-
-### Step 2: Stage 1 训练 (底盘+机械臂接近)
-
-使用预训练的 **Stage 2 Critic** (通过 AVP) 引导底盘和机械臂找到便于抓取的位置。
+### Evaluation
 
 ```bash
-# 基础训练 (AVP 自动加载 Stage 2 Critic)
-python train_stage1.py num_envs=8 device_id=0
+# Evaluate Stage 1
+python eval_jax.py \
+    --stage 1 \
+    --checkpoint outputs/stage1_best.pkl \
+    --num_episodes 100
 
-# 关闭 AVP (消融实验基线)
-python train_stage1.py avp_enabled=False output_name=Dcmm_NoAVP
+# Evaluate Stage 2
+python eval_jax.py \
+    --stage 2 \
+    --checkpoint outputs/stage2_best.pkl \
+    --num_episodes 100
 
-# 从检查点恢复训练
-python train_stage1.py checkpoint_tracking="outputs/Dcmm/2025-12-19/nn/best_reward_XXX.pth"
-```
-
-### 关键配置参数
-
-**Stage 1 配置** (`configs/config_stage1.yaml`):
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `num_envs` | 32 | 并行环境数（建议8-16，根据CPU核心数调整） |
-| `seed` | -1 | 随机种子（-1=自动随机） |
-| `device_id` | 0 | GPU设备ID |
-| `avp_enabled` | True | AVP开关 |
-| `train.ppo.max_agent_steps` | 25M | 最大训练步数 |
-| `train.ppo.learning_rate` | 3e-4 | 学习率 |
-| `train.ppo.horizon_length` | 512 | 采样长度 |
-| `train.ppo.minibatch_size` | 512 | Mini-batch大小 |
-| `train.ppo.mini_epochs` | 6 | PPO更新轮数 |
-| `train.ppo.entropy_coef` | 0.01 | 熵正则系数 |
-| `train.ppo.gamma` | 0.99 | 折扣因子 |
-| `train.ppo.tau` | 0.95 | GAE参数 |
-
-**Stage 2 配置** (`configs/config_stage2.yaml`):
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `num_envs` | 32 | 并行环境数（建议8-16，根据CPU核心数调整） |
-| `train.ppo.img_dim` | [224, 224] | 深度图尺寸 |
-| `train.ppo.action_catch_denorm` | [0.0, 0.025, 0.05] | 动作反归一化 [底盘, 手臂, 手部] |
-
----
-
-## 🧪 实验与测试
-
-### 可视化验证 (单窗口)
-
-> ⚠️ **重要**: 可视化时请使用 `num_envs=1` 避免多窗口导致系统卡死
-
-```bash
-# Stage 1 可视化训练 (AVP 开启)
-python train_stage1.py num_envs=1 viewer=True
-
-# Stage 1 可视化测试 (加载checkpoint)
-python train_stage1.py test=True num_envs=1 viewer=True \
-    checkpoint_tracking="outputs/Dcmm/2025-12-19/nn/best_reward_XXX.pth"
-
-# Stage 2 可视化测试
-python train_stage2.py test=True num_envs=1 viewer=True \
-    checkpoint_catching="outputs/Dcmm_Catch/2025-12-19/nn/best_reward_XXX.pth"
-```
-
-### 消融实验
-
-```bash
-# AVP消融 - 基线 (无AVP)
-python train_stage1.py avp_enabled=False output_name=Ablation_NoAVP seed=42
-
-# AVP消融 - 完整方法 (有AVP)
-python train_stage1.py avp_enabled=True output_name=Ablation_WithAVP seed=42
-
-# 不同AVP权重实验
-python train_stage1.py avp_enabled=True output_name=AVP_lambda_0.3
-# 修改DcmmCfg.py中 avp.lambda_weight_start 和 avp.lambda_weight_end
-```
-
-### 多种子实验
-
-```bash
-# 批量训练不同种子
-for seed in 42 123 456 789 1000; do
-    python train_stage2.py seed=$seed output_name=Dcmm_Catch_seed$seed &
-done
-
-# 等待所有训练完成
-wait
-```
-
-### WandB 日志配置
-
-```bash
-# 禁用 WandB (本地调试)
-python train_stage2.py wandb_mode=disabled
-
-# 离线模式 (稍后同步)
-python train_stage2.py wandb_mode=offline
-
-# 在线模式 (默认) - 设置项目名
-python train_stage2.py wandb_project=Picking_Sorting_Exp wandb_entity=your_team output_name=Exp001
-```
-
-### 评估模式
-
-```bash
-# Stage 1 评估 (100个episodes)
-python train_stage1.py test=True num_envs=1 \
-    checkpoint_tracking="outputs/Dcmm/.../best_reward_XXX.pth"
-
-# Stage 2 评估
-python train_stage2.py test=True num_envs=1 \
-    checkpoint_catching="outputs/Dcmm_Catch/.../best_reward_XXX.pth"
+# Visualization (CPU MuJoCo - MJX has no viewer)
+python visualize.py \
+    --checkpoint outputs/stage1_best.pkl \
+    --stage 1
 ```
 
 ---
 
-## 🔧 AVP 配置详解
-
-**AVP (Asymmetric Value Propagation)** 使用预训练的 Stage 2 Critic 为 Stage 1 提供"可抓取性"奖励信号。
-
-### 配置位置 (`configs/env/DcmmCfg.py`)
-
-```python
-class avp:
-    enabled = True                    # 主开关 (False=关闭AVP)
-    lambda_weight_start = 0.8         # 早期训练权重（强AVP引导）
-    lambda_weight_end = 0.2           # 后期训练权重（依赖原始奖励）
-    gate_distance = 1.5               # 距离门限 (仅在此距离内计算AVP)
-    checkpoint_path = "assets/checkpoints/avp/stage2_critic.pth"
-    ready_pose = np.array([0.0, 0.0, 0.0, 1.8, 0.0, -0.785])  # 虚拟就绪姿态
-    state_dim = 35                    # Stage 2 状态维度
-    img_size = 84                     # 深度图尺寸
-```
-
-### AVP 工作原理
-
-```
-Stage 1 当前状态
-      │
-      ▼
-构造虚拟观测:
-┌─────────────────────────────────┐
-│ • 虚拟手臂姿态 (ready_pose)      │
-│ • 真实物体位置                   │
-│ • 真实深度图                     │
-│ • 虚拟手部张开状态               │
-└─────────────────────────────────┘
-      │
-      ▼
-Stage 2 Critic(虚拟观测) → value_estimate
-      │
-      ▼
-AVP奖励 = λ(t) × clip(value_estimate, -5, 5)
-      │
-      ▼
-总奖励 = 原始Stage1奖励 + AVP奖励
-```
-
-### 更新 AVP 权重
-
-当训练出更好的 Stage 2 模型时：
-```bash
-cp outputs/Dcmm_Catch/.../nn/best_reward_XXX.pth assets/checkpoints/avp/stage2_critic.pth
-```
-
----
-
-## 🏗️ 神经网络架构
-
-### Stage 1 网络 (`ModelsStage1.py`)
-
-```
-输入:
-├── State (15维) → MLP [256, 128] → 特征
-└── Depth (84×84) → CNN → 256维特征
-                          │
-                          ▼
-              Concatenate → [特征 + 256]
-                          │
-           ┌──────────────┴──────────────┐
-           ▼                             ▼
-      Actor MLP                    Critic MLP
-      [256, 128]                   [256, 128]
-           │                             │
-           ▼                             ▼
-        μ (8维)                     Value (1维)
-        σ (8维)
-```
-
-**CNN架构:**
-- Conv2d(1→32, k=3, s=1, p=1) + ReLU + MaxPool(2)
-- Conv2d(32→64, k=3, s=1, p=1) + ReLU + MaxPool(2)
-- Conv2d(64→64, k=3, s=1, p=1) + ReLU + MaxPool(2)
-- Flatten → Linear → 256
-
-### Stage 2 网络 (`ModelsStage2.py`)
-
-```
-输入: Flattened [State(35) + Depth(84×84=7056)] = 7091维
-            │
-            ├── State → Actor MLP [256, 128] → μ (20维), σ (20维)
-            │
-            └── State → Value MLP [256, 128] ─┬─→ Concat
-                Depth → DepthCNN → 256维 ────┘    │
-                                                  ▼
-                                           Value Head → 1维
-```
-
-**DepthCNN架构:**
-- Conv2d(1→32, k=8, s=4) + ReLU
-- Conv2d(32→64, k=4, s=2) + ReLU
-- Conv2d(64→32, k=3, s=1) + ReLU
-- Flatten → Linear(32×7×7 → 256) + ReLU
-
----
-
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 Picking_Sorting/
-├── train_stage1.py                    # Stage 1 训练入口
-├── train_stage2.py                    # Stage 2 训练入口
-├── test_env.py                        # 环境测试脚本
-├── setup.py                           # 包安装配置
-├── requirements.txt                   # Python依赖
-├── environment.yml                    # Conda环境配置
-│
-├── configs/
-│   ├── config_stage1.yaml             # Stage 1 主配置
-│   ├── config_stage2.yaml             # Stage 2 主配置
-│   ├── env/
-│   │   └── DcmmCfg.py                 # 环境参数 + AVP配置 + 课程学习
-│   └── train/
-│       ├── stage1/PPO_Stage1.yaml     # Stage 1 PPO超参数
-│       └── stage2/PPO_Stage2.yaml     # Stage 2 PPO超参数
+├── train_stage1_jax.py          # Stage 1 JAX training entry
+├── train_stage2_jax.py          # Stage 2 JAX training entry
+├── eval_jax.py                  # Evaluation script
+├── visualize.py                 # CPU visualization (MJX has no viewer)
+├── test_env_jax.py              # Environment test
 │
 ├── gym_dcmm/
-│   ├── __init__.py                    # 注册Gym环境
 │   ├── agents/
-│   │   └── MujocoDcmm.py              # 机器人MuJoCo模型封装
+│   │   └── MujocoDcmm.py        # MJX robot wrapper + FK functions
+│   │
 │   ├── envs/
 │   │   ├── stage1/
-│   │   │   ├── DcmmVecEnvStage1.py    # Stage 1 环境
-│   │   │   └── RewardManagerStage1.py # Stage 1 奖励管理 (含AVP)
-│   │   ├── stage2/
-│   │   │   ├── DcmmVecEnvStage2.py    # Stage 2 环境
-│   │   │   └── RewardManagerStage2.py # Stage 2 奖励管理
-│   │   ├── observation_manager.py     # 观测处理
-│   │   ├── control_manager.py         # 控制管理
-│   │   ├── randomization_manager.py   # 域随机化
-│   │   ├── render_manager.py          # 渲染管理
-│   │   └── constants.py               # 常量定义
+│   │   │   └── RewardManagerStage1.py  # JAX reward computation
+│   │   └── stage2/
+│   │       └── RewardManagerStage2.py  # JAX reward computation
+│   │
 │   ├── algs/ppo_dcmm/
-│   │   ├── stage1/
-│   │   │   ├── PPO_Stage1.py          # Stage 1 PPO算法
-│   │   │   └── ModelsStage1.py        # Stage 1 神经网络
-│   │   ├── stage2/
-│   │   │   ├── PPO_Stage2.py          # Stage 2 PPO算法
-│   │   │   └── ModelsStage2.py        # Stage 2 神经网络
-│   │   ├── experience.py              # 经验缓冲
-│   │   └── utils.py                   # 工具函数 (RunningMeanStd等)
+│   │   └── stage2/
+│   │       └── ModelsStage2.py  # Flax ActorCritic
+│   │
 │   └── utils/
-│       ├── quat_utils.py              # 四元数工具
-│       └── util.py                    # 通用工具
+│       ├── pid.py               # JAX PID controller
+│       ├── quat_utils.py        # JAX quaternion operations
+│       ├── ik_pkg/
+│       │   └── ik_base.py       # JAX mobile base IK
+│       └── jax_migration_utils.py  # Conversion utilities
 │
 ├── assets/
-│   ├── checkpoints/avp/               # AVP预训练权重
-│   │   └── stage2_critic.pth
-│   ├── urdf/                          # MuJoCo机器人模型
-│   ├── meshes/                        # 3D网格模型
-│   ├── textures/                      # 纹理贴图
-│   └── objects/                       # 物体模型
+│   ├── checkpoints/avp/         # AVP pretrained weights
+│   ├── urdf/                    # MuJoCo robot models
+│   └── meshes/                  # 3D meshes
 │
-├── outputs/                           # 训练输出目录
-│   ├── Dcmm/                          # Stage 1 输出
-│   └── Dcmm_Catch/                    # Stage 2 输出
-│
-└── wandb/                             # WandB日志目录
+├── configs/                     # Hydra configuration
+├── requirements.txt             # pip dependencies
+└── environment.yml              # Conda environment
 ```
 
 ---
 
-## 📈 课程学习配置
+## 🔧 JAX/MJX Architecture
 
-课程学习参数位于 `configs/env/DcmmCfg.py`:
+### Key Differences from CPU Version
+
+| Aspect | CPU (Old) | GPU/JAX (New) |
+|--------|-----------|---------------|
+| **Physics** | `mujoco.mj_step()` | `mjx.step()` |
+| **Parallelism** | Python multiprocessing | `jax.vmap` over environments |
+| **Neural Networks** | PyTorch | Flax |
+| **State Management** | Class attributes | Explicit state passing |
+| **Random Numbers** | `numpy.random` | `jax.random.PRNGKey` |
+| **Conditionals** | Python `if/else` | `jax.lax.cond` |
+
+### Stateless Design Pattern
 
 ```python
-class curriculum:
-    # Stage 1 课程学习步数
-    stage1_steps = 2e6      # 2M步完成课程
-    stage2_steps = 10e6     # Stage 2 扩展课程
+# Old (CPU): Class with mutable state
+class PIDController:
+    def __init__(self):
+        self.integral = 0.0
     
-    # 碰撞惩罚渐进 (从轻到重)
-    collision_stem_start = -0.1   # 初始轻微惩罚
-    collision_stem_end = -2.0     # 最终严厉惩罚
-    
-    # 朝向要求渐进 (从宽松到严格)
-    orient_power_start = 1.0      # 初始线性
-    orient_power_end = 1.5        # 最终1.5次方
-    
-    # 两阶段训练配置 (Stage 2)
-    phase1_steps = 15e6     # Phase 1: Actor + Critic
-    phase2_steps = 10e6     # Phase 2: Critic only
-    
-    # 自适应课程
-    success_rate_threshold = 0.3
-    phase_switch_success_threshold = 0.30
+    def step(self, error):
+        self.integral += error  # Mutation!
+        return self.Kp * error + self.Ki * self.integral
+
+# New (JAX): Pure function with explicit state
+@jax.jit
+def pid_step(error, state, params):
+    new_integral = state.integral + error
+    output = params.Kp * error + params.Ki * new_integral
+    new_state = state._replace(integral=new_integral)
+    return output, new_state  # Return new state explicitly
+```
+
+### Site-based FK (Important for Grasping!)
+
+```python
+# WRONG: Body position = wrist center, NOT grasp point
+ee_pos = mx_data.xpos[body_id]  # ❌ Misses by wrist-to-finger offset
+
+# CORRECT: Site position = user-defined grasp point
+from gym_dcmm.agents.MujocoDcmm import (
+    create_site_id_mapping, get_site_position, compute_site_to_site_distance
+)
+
+# Define in MJCF: <site name="grasp_site" pos="0 0 0.05"/>
+site_ids = create_site_id_mapping(mj_model, {
+    'ee': 'grasp_site',
+    'target': 'tomato_site'
+})
+
+# Use site positions for reward computation
+ee_pos = get_site_position(mx_data, site_ids.ee_site_id)  # ✅ Correct
+dist = compute_site_to_site_distance(mx_data, site_ids.ee_site_id, site_ids.target_site_id)
 ```
 
 ---
 
-## 🌍 域随机化配置
+## 📊 Performance
 
-### 深度噪声 (`DcmmCfg.depth_noise`)
+### Environments per Second (Single RTX 4090)
 
-模拟RealSense D435i在户外农业场景的噪声特性：
+| Configuration | Envs | FPS |
+|--------------|------|-----|
+| MJX + JAX | 1024 | ~50,000 |
+| MJX + JAX | 4096 | ~100,000 |
+| CPU (old) | 16 | ~800 |
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `cutout_num` | (1, 3) | 矩形遮挡数量 |
-| `cutout_size` | (0.05, 0.15) | 遮挡大小比例 |
-| `salt_ratio` | (0.01, 0.03) | 盐噪声比例 |
-| `pepper_ratio` | (0.02, 0.05) | 胡椒噪声比例 |
-| `dropout_rate` | (0.05, 0.10) | 像素丢失率 |
-| `base_std` | 0.01 | 基础高斯噪声 |
+### GPU Memory Usage
 
-### 光照随机化 (`DcmmCfg.lighting_dr`)
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `ambient_range` | (0.1, 0.5) | 环境光强度 |
-| `diffuse_range` | (0.3, 0.8) | 漫反射强度 |
-| `dir_noise` | 0.3 | 光源方向噪声 |
+| Envs | VRAM |
+|------|------|
+| 256 | ~4 GB |
+| 1024 | ~12 GB |
+| 4096 | ~24 GB |
 
 ---
 
-## ❓ 常见问题
+## ⚙️ Configuration
 
-### Q: 训练时多个窗口弹出导致系统卡死?
-**A**: 使用可视化时确保 `num_envs=1 viewer=True`，代码会自动强制设置。
+### Training Parameters
 
-### Q: AVP 如何开关?
-**A**: 命令行传参 `avp_enabled=False` 或修改 `configs/env/DcmmCfg.py` 中 `avp.enabled = False`。
+```bash
+python train_stage1_jax.py \
+    --num_envs 1024           # Parallel environments
+    --total_timesteps 25e6    # Total training steps
+    --learning_rate 3e-4      # Learning rate
+    --gamma 0.99              # Discount factor
+    --gae_lambda 0.95         # GAE lambda
+    --clip_epsilon 0.2        # PPO clip range
+    --entropy_coef 0.01       # Entropy bonus
+    --batch_size 4096         # Minibatch size
+    --num_epochs 4            # PPO epochs per update
+    --seed 42                 # Random seed
+    --device cuda             # Device (cuda/cpu)
+    --wandb_project my_proj   # WandB project (optional)
+```
 
-### Q: 训练速度太慢?
-**A**: 
-1. 增大 `num_envs`（推荐8-16，不超过CPU核心数×2，代码限制最大为18以防止内存溢出）
-2. 确保使用GPU (`device_id=0`)
-3. 关闭WandB (`wandb_mode=disabled`)
+### Environment Configuration
 
-### Q: 显存不足 (OOM)?
-**A**: 减少 `num_envs` 或 `minibatch_size`。
+Edit `configs/env/DcmmCfg.py`:
 
-### Q: Stage 2 训练不稳定?
-**A**: 检查Stage 2 Critic是否已训练收敛后再用于AVP。
+```python
+class mjx_config:
+    # MJX-specific settings
+    dt = 0.002              # Physics timestep
+    substeps = 4            # Substeps per control step
+    
+class curriculum:
+    # Curriculum learning
+    stage1_steps = 2e6
+    collision_penalty_start = -0.1
+    collision_penalty_end = -2.0
 
-### Q: 如何查看训练曲线?
-**A**: 
-1. WandB: 访问 wandb.ai 查看在线日志
-2. TensorBoard: `tensorboard --logdir outputs/Dcmm/YYYY-MM-DD/tb`
-
-### Q: 如何添加新的物体?
-**A**: 
-1. 在 `assets/objects/` 添加物体mesh
-2. 修改 `assets/urdf/` 中的MJCF文件
-3. 在 `DcmmCfg.py` 的 `object_shape` 和 `object_size` 中添加配置
+class avp:
+    # Asymmetric Value Propagation
+    enabled = True
+    lambda_weight_start = 0.8
+    lambda_weight_end = 0.2
+    gate_distance = 1.5
+```
 
 ---
 
-## 📚 参考文献
+## 🐛 Troubleshooting
 
-- [PPO: Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347)
-- [MuJoCo: Advanced Physics Simulation](https://mujoco.org/)
-- [LEAP Hand: Low-cost Efficient Adaptable Programmable Hand](https://leaphand.com/)
+### JAX GPU Not Detected
+
+```bash
+# Check CUDA
+nvidia-smi
+
+# Reinstall JAX with correct CUDA version
+pip uninstall jax jaxlib
+pip install --upgrade "jax[cuda12]"  # or cuda11
+```
+
+### Out of Memory
+
+```bash
+# Reduce parallel environments
+python train_stage1_jax.py --num_envs 256
+
+# Enable memory preallocation
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.8
+```
+
+### MJX Import Error
+
+```bash
+# MJX requires mujoco >= 3.0
+pip install --upgrade mujoco>=3.0
+```
+
+### NaN in Training
+
+1. Check learning rate (try 1e-4)
+2. Gradient clipping (--max_grad_norm 0.5)
+3. Check reward scaling
 
 ---
 
-## 📄 许可证
+## 📚 References
+
+- [MuJoCo MJX Documentation](https://mujoco.readthedocs.io/en/stable/mjx.html)
+- [JAX Documentation](https://jax.readthedocs.io/)
+- [Flax Documentation](https://flax.readthedocs.io/)
+- [PPO Algorithm](https://arxiv.org/abs/1707.06347)
+
+---
+
+## 📄 License
 
 MIT License
 
 ---
 
-## 🤝 贡献指南
+## 🤝 Contributing
 
-欢迎提交Issue和Pull Request！
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 提交 Pull Request
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing`)
+5. Open Pull Request
