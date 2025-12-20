@@ -71,7 +71,7 @@ class BodyIDMapping(NamedTuple):
     hand_body_ids: Tuple[int, ...]
 
 
-def create_body_id_mapping(mj_model, body_names: Dict[str, str] = None) -> BodyIDMapping:
+def create_body_id_mapping(mj_model, body_names: Dict[str, Any] = None) -> BodyIDMapping:
     """Create body ID mapping from CPU MuJoCo model.
     
     This must be called BEFORE converting to MJX and JIT compilation.
@@ -81,14 +81,17 @@ def create_body_id_mapping(mj_model, body_names: Dict[str, str] = None) -> BodyI
         mj_model: CPU MuJoCo model (mujoco.MjModel)
         body_names: Optional custom body name mapping:
             {
-                'ee': 'link6',           # End-effector body name
-                'base': 'arm_base',       # Base body name
-                'object': 'object',       # Target object body name
-                'hand': ['finger1', ...], # Hand body names (list)
+                'ee': 'link6',           # End-effector body name (str)
+                'base': 'arm_base',       # Base body name (str)
+                'object': 'object',       # Target object body name (str)
+                'hand': ['finger1', ...], # Hand body names (List[str])
             }
             
     Returns:
         BodyIDMapping with pre-computed IDs
+        
+    Raises:
+        ValueError: If critical bodies (ee, base, object) are not found
         
     Example:
         mj_model = mujoco.MjModel.from_xml_path('robot.xml')
@@ -109,18 +112,24 @@ def create_body_id_mapping(mj_model, body_names: Dict[str, str] = None) -> BodyI
             'hand': [],
         }
     
-    def get_id(name):
+    def get_id(name, critical=True):
         bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
         if bid == -1:
-            print(f"Warning: Body '{name}' not found in model")
+            msg = f"Body '{name}' not found in model (ID=-1)"
+            if critical:
+                raise ValueError(msg)
+            else:
+                print(f"Warning: {msg}")
         return bid
     
-    ee_id = get_id(body_names.get('ee', 'link6'))
-    base_id = get_id(body_names.get('base', 'arm_base'))
-    obj_id = get_id(body_names.get('object', 'object'))
+    # Critical bodies - raise error if not found
+    ee_id = get_id(body_names.get('ee', 'link6'), critical=True)
+    base_id = get_id(body_names.get('base', 'arm_base'), critical=True)
+    obj_id = get_id(body_names.get('object', 'object'), critical=True)
     
+    # Hand bodies are optional
     hand_names = body_names.get('hand', [])
-    hand_ids = tuple(get_id(n) for n in hand_names)
+    hand_ids = tuple(get_id(n, critical=False) for n in hand_names)
     
     return BodyIDMapping(
         ee_body_id=ee_id,
@@ -680,7 +689,9 @@ def get_ee_velocity(mx_data, ee_body_id: int) -> jnp.ndarray:
     Returns:
         End-effector linear velocity in world frame (3,)
         
-    Note: cvel is [angular_vel(3), linear_vel(3)], we extract linear part
+    Note: MJX cvel has shape (nbody, 6) where:
+        - cvel[body_id, 0:3] = angular velocity
+        - cvel[body_id, 3:6] = linear velocity (extracted here)
     """
     return mx_data.cvel[ee_body_id, 3:6]
 
