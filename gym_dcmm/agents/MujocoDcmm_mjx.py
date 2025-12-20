@@ -50,6 +50,87 @@ from gym_dcmm.utils.ik_pkg.ik_base_jax import (
 
 
 # ============================================
+# Body ID Mapping (for FK lookup)
+# ============================================
+
+class BodyIDMapping(NamedTuple):
+    """Pre-computed body IDs for FK lookup.
+    
+    These IDs must be computed from the CPU model BEFORE JIT compilation.
+    Use create_body_id_mapping() to create this from an MjModel.
+    
+    Attributes:
+        ee_body_id: End-effector body ID (e.g., 'link6')
+        base_body_id: Mobile base body ID (e.g., 'arm_base')
+        object_body_id: Target object body ID (e.g., 'object')
+        hand_body_ids: Hand finger body IDs for contact detection
+    """
+    ee_body_id: int
+    base_body_id: int
+    object_body_id: int
+    hand_body_ids: Tuple[int, ...]
+
+
+def create_body_id_mapping(mj_model, body_names: Dict[str, str] = None) -> BodyIDMapping:
+    """Create body ID mapping from CPU MuJoCo model.
+    
+    This must be called BEFORE converting to MJX and JIT compilation.
+    The IDs are used for FK lookup in reward computation.
+    
+    Args:
+        mj_model: CPU MuJoCo model (mujoco.MjModel)
+        body_names: Optional custom body name mapping:
+            {
+                'ee': 'link6',           # End-effector body name
+                'base': 'arm_base',       # Base body name
+                'object': 'object',       # Target object body name
+                'hand': ['finger1', ...], # Hand body names (list)
+            }
+            
+    Returns:
+        BodyIDMapping with pre-computed IDs
+        
+    Example:
+        mj_model = mujoco.MjModel.from_xml_path('robot.xml')
+        body_ids = create_body_id_mapping(mj_model)
+        
+        # Now convert to MJX
+        mx_model = mjx.put_model(mj_model)
+        mx_data = mjx.put_data(mj_model, mujoco.MjData(mj_model))
+        
+        # Use in reward computation (body_ids.ee_body_id is static)
+        ee_pos = get_ee_position(mx_data, body_ids.ee_body_id)
+    """
+    if body_names is None:
+        body_names = {
+            'ee': 'link6',
+            'base': 'arm_base',
+            'object': 'object',
+            'hand': [],
+        }
+    
+    def get_id(name):
+        bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if bid == -1:
+            print(f"Warning: Body '{name}' not found in model")
+        return bid
+    
+    ee_id = get_id(body_names.get('ee', 'link6'))
+    base_id = get_id(body_names.get('base', 'arm_base'))
+    obj_id = get_id(body_names.get('object', 'object'))
+    
+    hand_names = body_names.get('hand', [])
+    hand_ids = tuple(get_id(n) for n in hand_names)
+    
+    return BodyIDMapping(
+        ee_body_id=ee_id,
+        base_body_id=base_id,
+        object_body_id=obj_id,
+        hand_body_ids=hand_ids
+    )
+
+
+# ============================================
 # State Containers
 # ============================================
 
@@ -534,6 +615,122 @@ def robot_control_step(
 # ============================================
 # MJX Integration Functions
 # ============================================
+
+# ============================================
+# Forward Kinematics (FK) for Reward Computation
+# ============================================
+
+# IMPORTANT: For reward computation, you need to know WHERE the end-effector is
+# in Cartesian space. MJX provides this via mx_data.xpos (body positions) and
+# mx_data.site_xpos (site positions after mj_forward/mj_step).
+#
+# Usage Pattern:
+#   After mjx.step(), the forward kinematics are automatically computed.
+#   Access end-effector position via:
+#     ee_pos = mx_data.xpos[ee_body_id]  # Body position
+#   or
+#     ee_pos = mx_data.site_xpos[ee_site_id]  # Site position (more precise)
+#
+# The body/site IDs must be pre-computed from the CPU model before JIT:
+#   ee_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
+#   ee_site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, 'ee_site')
+
+@jax.jit
+def get_ee_position(mx_data, ee_body_id: int) -> jnp.ndarray:
+    """Get end-effector position from MJX data.
+    
+    Forward kinematics are automatically computed by mjx.step().
+    This function simply extracts the position for a given body.
+    
+    Args:
+        mx_data: MJX data after physics step (FK already computed)
+        ee_body_id: Body ID for end-effector (pre-computed from CPU model)
+        
+    Returns:
+        End-effector position in world frame (3,)
+        
+    Note: Body IDs are integers that must be obtained from the CPU model:
+        ee_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, 'link6')
+    """
+    return mx_data.xpos[ee_body_id]
+
+
+@jax.jit
+def get_ee_orientation(mx_data, ee_body_id: int) -> jnp.ndarray:
+    """Get end-effector orientation (quaternion) from MJX data.
+    
+    Args:
+        mx_data: MJX data after physics step
+        ee_body_id: Body ID for end-effector
+        
+    Returns:
+        End-effector quaternion [w, x, y, z] in world frame (4,)
+    """
+    return mx_data.xquat[ee_body_id]
+
+
+@jax.jit
+def get_ee_velocity(mx_data, ee_body_id: int) -> jnp.ndarray:
+    """Get end-effector linear velocity from MJX data.
+    
+    Args:
+        mx_data: MJX data after physics step
+        ee_body_id: Body ID for end-effector
+        
+    Returns:
+        End-effector linear velocity in world frame (3,)
+        
+    Note: cvel is [angular_vel(3), linear_vel(3)], we extract linear part
+    """
+    return mx_data.cvel[ee_body_id, 3:6]
+
+
+@jax.jit
+def get_object_position(mx_data, obj_body_id: int) -> jnp.ndarray:
+    """Get object/target position from MJX data.
+    
+    Args:
+        mx_data: MJX data after physics step
+        obj_body_id: Body ID for object/target
+        
+    Returns:
+        Object position in world frame (3,)
+    """
+    return mx_data.xpos[obj_body_id]
+
+
+@jax.jit
+def compute_ee_to_target_distance(
+    mx_data,
+    ee_body_id: int,
+    target_body_id: int
+) -> jnp.ndarray:
+    """Compute distance from end-effector to target.
+    
+    This is the key metric for reward computation.
+    
+    Args:
+        mx_data: MJX data after physics step
+        ee_body_id: Body ID for end-effector
+        target_body_id: Body ID for target object
+        
+    Returns:
+        Euclidean distance (scalar)
+    """
+    ee_pos = mx_data.xpos[ee_body_id]
+    target_pos = mx_data.xpos[target_body_id]
+    return jnp.linalg.norm(ee_pos - target_pos)
+
+
+# Batched versions for parallel environments
+get_ee_position_batched = jax.vmap(get_ee_position, in_axes=(0, None))
+get_ee_orientation_batched = jax.vmap(get_ee_orientation, in_axes=(0, None))
+get_ee_velocity_batched = jax.vmap(get_ee_velocity, in_axes=(0, None))
+get_object_position_batched = jax.vmap(get_object_position, in_axes=(0, None))
+compute_ee_to_target_distance_batched = jax.vmap(
+    compute_ee_to_target_distance, in_axes=(0, None, None)
+)
+
 
 if MJX_AVAILABLE:
     
